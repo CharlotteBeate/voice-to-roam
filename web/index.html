@@ -100,10 +100,18 @@
     <div class="hint">Stored only in this browser, on this device. It is never sent anywhere except Roam.</div>
     <label for="cfgWhisper">Whisper endpoint (optional)</label>
     <input id="cfgWhisper" autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="https://…/transcribe">
-    <div class="hint">Leave empty to use your keyboard's dictation. If set, a Record button appears
-      and audio is posted here, expecting <code>{"text": "..."}</code> back. This reintroduces a
-      server dependency — the note still works without it.</div>
+           placeholder="https://instructfeed.com/transcribe">
+    <div class="row" style="margin-top:6px">
+      <button type="button" id="useChsiegm">Use chsiegm server</button>
+    </div>
+    <label for="cfgWhisperKey">Whisper key (if the server requires one)</label>
+    <input id="cfgWhisperKey" type="password" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="shared secret">
+    <div class="hint">Leave the endpoint empty to use your keyboard's dictation. When set, a Record
+      button appears and the raw audio is posted as <code>application/octet-stream</code>,
+      expecting <code>{"text": "..."}</code> back — that is the contract the chsiegm
+      <code>/transcribe</code> route already speaks. This reintroduces a server dependency; the
+      app still works fully without it.</div>
     <div class="bar" style="margin-top:16px">
       <button value="cancel">Cancel</button>
       <button value="save" class="primary" id="cfgSave">Save</button>
@@ -366,9 +374,25 @@ async function toggleRecord() {
       els.rec.textContent = 'Record (Whisper)';
       say('Transcribing…');
       try {
-        const fd = new FormData();
-        fd.append('audio', new Blob(chunks, { type:'audio/webm' }), 'note.webm');
-        const r = await fetch(cfg.whisper, { method:'POST', body:fd });
+        // The chsiegm /transcribe route reads the request body as raw bytes and
+        // forwards them to faster-whisper as application/octet-stream. Sending
+        // multipart here would hand Whisper the MIME envelope as if it were
+        // audio, so post the blob itself.
+        const headers = { 'Content-Type':'application/octet-stream' };
+        if (cfg.whisperKey) headers['Authorization'] = `Bearer ${cfg.whisperKey}`;
+        // X-Fyi-Hint seeds Whisper's initial_prompt so proper nouns are spelled
+        // rather than guessed — the exact weakness of keyboard dictation. HTTP
+        // headers are not UTF-8 safe, so this is ASCII-folded and capped at the
+        // 400 chars the server keeps.
+        const hint = titles.items.map(r => r[0]).join(', ')
+          .replace(/[^\x20-\x7E]/g, '').slice(0, 400);
+        if (hint) headers['X-Fyi-Hint'] = hint;
+        const r = await fetch(cfg.whisper, {
+          method:'POST', headers, body:new Blob(chunks, { type:'audio/webm' }),
+        });
+        if (r.status === 401 || r.status === 403) {
+          throw new Error(`rejected (HTTP ${r.status}) — the server wants a sign-in or a key`);
+        }
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         const t = (j.text || '').trim();
@@ -411,21 +435,27 @@ function renderDest(filter='') {
 }
 
 /* ---------- settings ------------------------------------------------------ */
+const CHSIEGM_WHISPER = 'https://instructfeed.com/transcribe';
+
 function openCfg() {
   $('cfgGraph').value = (cfg && cfg.graph) || '';
   $('cfgToken').value = (cfg && cfg.token) || '';
   $('cfgWhisper').value = (cfg && cfg.whisper) || '';
+  $('cfgWhisperKey').value = (cfg && cfg.whisperKey) || '';
   $('cfgDlg').showModal();
 }
+
+$('useChsiegm').onclick = () => { $('cfgWhisper').value = CHSIEGM_WHISPER; };
 
 $('cfgDlg').addEventListener('close', async () => {
   if ($('cfgDlg').returnValue !== 'save') return;
   const graph = $('cfgGraph').value.trim();
   const token = $('cfgToken').value.trim();
   const whisper = $('cfgWhisper').value.trim();
+  const whisperKey = $('cfgWhisperKey').value.trim();
   if (!graph || !token) { say('Graph name and token are both required.', 'err'); return; }
   if (cfg && cfg.graph !== graph) localStorage.removeItem(LS.peer + cfg.graph);
-  cfg = { graph, token, whisper };
+  cfg = { graph, token, whisper, whisperKey };
   save(LS.cfg, cfg);
   els.rec.classList.toggle('hidden', !whisper);
   say('Settings saved. Loading titles…');

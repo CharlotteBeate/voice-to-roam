@@ -110,26 +110,31 @@ enter the graph name and token, and use Chrome's **⋮ → Add to Home screen**.
 Note that any unmatched path (`/anything`) serves `index.html` with a 200 — that
 is Cloudflare Pages' single-page fallback, not a routing bug.
 
-## 4. Optional: Whisper instead of Gboard
+## 4. Optional: Whisper on the chsiegm box instead of Gboard
 
-Off unless you fill in **Whisper endpoint** in Settings. When set, a **Record**
-button appears; audio is posted as multipart `audio` and the reply is expected to
-be `{"text": "..."}`. The transcript lands in the textarea *still editable*, so a
-bad transcription is never committed blindly, and if the endpoint is unreachable
-the app says so and you carry on with the keyboard.
+Off unless you fill in **Whisper endpoint** in Settings; **Use chsiegm server**
+fills in `https://instructfeed.com/transcribe`, the route the box already
+exposes. A **Record** button then appears. Audio is posted as raw
+`application/octet-stream` — the contract that route speaks, since it streams the
+body straight to faster-whisper — and page titles ride along in `X-Fyi-Hint`,
+which seeds Whisper's `initial_prompt` so proper nouns are spelled rather than
+guessed. That is precisely where Gboard is weakest on names and mixed
+German/English.
 
-The `large-v3-turbo` weights in `/Volumes/chsiegm/voice-to-text/models` beat
-Gboard on names and mixed German/English. But be clear-eyed: **this puts a server
-back in the path**, and if that server is bbking2 behind the cloudflared tunnel,
-you have reintroduced exactly the fragility this setup removed. The app degrades
-rather than breaks, which is the only reason it is safe to offer.
+The transcript lands in the textarea *still editable*, so a bad transcription is
+never committed blindly, and if the endpoint is unreachable the app says so and
+you carry on with the keyboard.
 
-Your endpoint must also send CORS headers, or the browser will block it:
+**The box does not accept these requests yet.** `/transcribe` has no CORS
+preflight and requires the email sign-in cookie, so the browser is blocked before
+the POST is even sent. The server-side change, and why it cannot be applied from
+the Mac, is in [`docs/chsiegm-transcribe-patch.md`](docs/chsiegm-transcribe-patch.md).
 
-```
-Access-Control-Allow-Origin: https://voice-to-roam.pages.dev
-Access-Control-Allow-Headers: Content-Type
-```
+Be clear-eyed about what enabling this costs: it puts the MIT box, the shared
+cloudflared tunnel, and `fyi-up.sh` back in the path — exactly the fragility this
+project was built to avoid. Saving to Roam never touches the box, and the app
+degrades to the keyboard rather than breaking, which is the only reason it is
+safe to offer at all.
 
 ## Files
 
