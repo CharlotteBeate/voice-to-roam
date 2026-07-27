@@ -1,0 +1,480 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111318">
+<title>Note to Roam</title>
+<link rel="manifest" href="manifest.webmanifest">
+<style>
+  :root {
+    --bg:#ffffff; --fg:#16181d; --muted:#6b7280; --line:#e4e6eb;
+    --accent:#3b6fd4; --accent-fg:#fff; --chip:#eef2fb; --warn:#b45309; --err:#b42318;
+    --ok:#0f7b45;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#111318; --fg:#e8eaed; --muted:#9aa0aa; --line:#2a2d34;
+      --accent:#5b8def; --accent-fg:#0b0d11; --chip:#1c2333; --warn:#d99a2b;
+      --err:#f2726a; --ok:#4ac48a;
+    }
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 -apple-system,
+    Roboto, "Segoe UI", system-ui, sans-serif;
+    padding:max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+  }
+  header { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  h1 { font-size:17px; margin:0; font-weight:600; flex:1; }
+  button {
+    font:inherit; border:1px solid var(--line); background:transparent; color:var(--fg);
+    border-radius:10px; padding:9px 13px; cursor:pointer;
+  }
+  button.primary { background:var(--accent); color:var(--accent-fg); border-color:transparent; font-weight:600; }
+  button.icon { padding:7px 10px; }
+  button:disabled { opacity:.5; }
+  textarea, input {
+    width:100%; font:inherit; color:var(--fg); background:transparent;
+    border:1px solid var(--line); border-radius:12px; padding:12px;
+  }
+  textarea { min-height:34vh; resize:vertical; }
+  .row { display:flex; gap:8px; align-items:center; }
+  .row.wrap { flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:13px; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
+  .chip {
+    background:var(--chip); border:1px solid var(--line); border-radius:999px;
+    padding:5px 11px; font-size:14px; cursor:pointer;
+  }
+  .chip.on { background:var(--accent); color:var(--accent-fg); border-color:transparent; }
+  .bar { display:flex; gap:8px; margin-top:10px; }
+  .bar button { flex:1; }
+  #status { margin-top:10px; font-size:14px; min-height:20px; }
+  .err { color:var(--err); } .ok { color:var(--ok); } .warn { color:var(--warn); }
+  dialog {
+    border:1px solid var(--line); border-radius:14px; background:var(--bg); color:var(--fg);
+    width:min(92vw,460px); padding:16px;
+  }
+  dialog::backdrop { background:rgba(0,0,0,.5); }
+  label { display:block; margin:12px 0 5px; font-size:14px; font-weight:600; }
+  .hint { font-size:12px; color:var(--muted); margin-top:4px; }
+  #destList { max-height:44vh; overflow:auto; margin-top:8px; }
+  #destList button { display:block; width:100%; text-align:left; margin-bottom:5px; }
+  .hidden { display:none !important; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="destLabel">Today's daily note</h1>
+  <button class="icon" id="destBtn" title="Choose destination page">Page</button>
+  <button class="icon" id="cfgBtn" title="Settings">Settings</button>
+</header>
+
+<textarea id="note" placeholder="Tap the microphone on your keyboard and speak, then edit freely. Nothing is sent until you press Save."></textarea>
+
+<div class="row wrap" style="margin-top:8px">
+  <button id="recBtn" class="hidden">Record (Whisper)</button>
+  <span class="muted" id="titleCount"></span>
+</div>
+
+<div class="chips" id="chips"></div>
+
+<div class="bar">
+  <button id="clearBtn">Clear</button>
+  <button id="saveBtn" class="primary">Save to Roam</button>
+</div>
+
+<div id="status"></div>
+
+<!-- Settings -->
+<dialog id="cfgDlg">
+  <form method="dialog">
+    <strong>Settings</strong>
+    <label for="cfgGraph">Roam graph name</label>
+    <input id="cfgGraph" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="my-graph">
+    <label for="cfgToken">API token (write access)</label>
+    <input id="cfgToken" type="password" autocapitalize="off" autocorrect="off"
+           spellcheck="false" placeholder="roam-graph-token-...">
+    <div class="hint">Stored only in this browser, on this device. It is never sent anywhere except Roam.</div>
+    <label for="cfgWhisper">Whisper endpoint (optional)</label>
+    <input id="cfgWhisper" autocapitalize="off" autocorrect="off" spellcheck="false"
+           placeholder="https://…/transcribe">
+    <div class="hint">Leave empty to use your keyboard's dictation. If set, a Record button appears
+      and audio is posted here, expecting <code>{"text": "..."}</code> back. This reintroduces a
+      server dependency — the note still works without it.</div>
+    <div class="bar" style="margin-top:16px">
+      <button value="cancel">Cancel</button>
+      <button value="save" class="primary" id="cfgSave">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Destination picker -->
+<dialog id="destDlg">
+  <strong>Where should this go?</strong>
+  <div class="bar" style="margin-top:12px">
+    <button id="pickDaily" class="primary">Today's daily note</button>
+  </div>
+  <label for="destSearch">…or an existing page</label>
+  <input id="destSearch" placeholder="Search page titles" autocapitalize="off">
+  <div id="destList"></div>
+  <div class="bar" style="margin-top:8px">
+    <button id="destClose">Close</button>
+    <button id="refreshTitles">Refresh titles</button>
+  </div>
+</dialog>
+
+<script>
+(() => {
+'use strict';
+
+const API_ROOT = 'https://api.roamresearch.com/api/graph';
+const LS = { cfg:'v2r.cfg', titles:'v2r.titles', peer:'v2r.peer.', queue:'v2r.queue' };
+
+const $ = (id) => document.getElementById(id);
+const els = {
+  note:$('note'), chips:$('chips'), status:$('status'), save:$('saveBtn'),
+  clear:$('clearBtn'), destLabel:$('destLabel'), titleCount:$('titleCount'),
+  rec:$('recBtn'), destList:$('destList'), destSearch:$('destSearch'),
+};
+
+let cfg = load(LS.cfg, null);
+let titles = load(LS.titles, { at:0, items:[] });   // items: [[title, uid], ...]
+let dest = null;                                     // null => today's daily note
+
+function load(k, dflt) { try { return JSON.parse(localStorage.getItem(k)) ?? dflt; } catch { return dflt; } }
+function save(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+function say(msg, cls='') { els.status.className = cls; els.status.textContent = msg; }
+
+/* ---------- Roam API ------------------------------------------------------
+   The documented endpoint answers 308 and redirects to a per-graph
+   peer-N.api.roamresearch.com host. Browsers strip the Authorization header
+   across an origin change, so following that redirect with credentials fails
+   as a 401 that looks exactly like a bad token. Instead resolve the peer once
+   with an unauthenticated probe (reading the final response.url), cache it,
+   and address the peer directly ever after — no redirect, header intact.     */
+
+async function peerBase(graph) {
+  const key = LS.peer + graph;
+  let base = localStorage.getItem(key);
+  if (base) return base;
+  const probe = await fetch(`${API_ROOT}/${encodeURIComponent(graph)}/write`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+  });
+  base = probe.url.replace(/\/write$/, '');
+  if (!/^https:\/\/[^/]*\.roamresearch\.com(:\d+)?\//.test(base + '/')) {
+    throw new Error('unexpected redirect target');
+  }
+  localStorage.setItem(key, base);
+  return base;
+}
+
+async function roam(path, payload, retry = true) {
+  const base = await peerBase(cfg.graph);
+  let res;
+  try {
+    res = await fetch(`${base}/${path}`, {
+      method:'POST',
+      headers:{ Authorization:`Bearer ${cfg.token}`, 'Content-Type':'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    if (retry) { localStorage.removeItem(LS.peer + cfg.graph); return roam(path, payload, false); }
+    throw e;
+  }
+  // A stale peer shows up as 404/5xx — re-resolve once before giving up.
+  if (!res.ok && retry && (res.status === 404 || res.status >= 500)) {
+    localStorage.removeItem(LS.peer + cfg.graph);
+    return roam(path, payload, false);
+  }
+  return res;
+}
+
+/* ---------- daily note identifiers ---------------------------------------
+   Roam keys a daily note by a uid of MM-DD-YYYY and titles it "July 27th,
+   2026". Both must agree or Roam will not treat the page as that day's note. */
+const MONTHS = ['January','February','March','April','May','June','July',
+                'August','September','October','November','December'];
+function today() {
+  const d = new Date(), p = (n) => String(n).padStart(2,'0'), day = d.getDate();
+  const sfx = (day % 100 >= 11 && day % 100 <= 13) ? 'th'
+            : ({1:'st',2:'nd',3:'rd'})[day % 10] || 'th';
+  return {
+    uid: `${p(d.getMonth()+1)}-${p(day)}-${d.getFullYear()}`,
+    title: `${MONTHS[d.getMonth()]} ${day}${sfx}, ${d.getFullYear()}`,
+  };
+}
+
+/* ---------- title index --------------------------------------------------- */
+async function loadTitles(force = false) {
+  const stale = Date.now() - titles.at > 6 * 3600 * 1000;
+  if (!force && titles.items.length && !stale) return titles.items;
+  const res = await roam('q', {
+    query: '[:find ?title ?uid :where [?e :node/title ?title] [?e :block/uid ?uid]]'
+  });
+  if (!res.ok) throw new Error(`title query failed (HTTP ${res.status})`);
+  const data = await res.json();
+  const rows = (data && data.result) || data || [];
+  titles = { at: Date.now(), items: rows.filter(r => r && r[0]) };
+  save(LS.titles, titles);
+  return titles.items;
+}
+
+/* Longest-first so "DML Coverage" wins over "DML".
+   A character mask marks text already inside [[...]] — and every span claimed
+   by a longer title — as untouchable. Without it, linking "DML Coverage" would
+   still offer the "DML" sitting inside the new brackets, and accepting that
+   would produce [[[[DML]] Coverage]]. With it, re-scanning is idempotent while
+   a genuinely standalone "DML" elsewhere is still offered. */
+function detect(text) {
+  const lower = text.toLowerCase();
+  const mask = new Array(text.length).fill(false);
+  for (const m of text.matchAll(/\[\[[^\]]*\]\]/g)) {
+    for (let i = m.index; i < m.index + m[0].length; i++) mask[i] = true;
+  }
+  const found = [], seen = new Set();
+  const cands = titles.items
+    .map(r => r[0])
+    .filter(t => t && t.length >= 3)
+    .sort((a,b) => b.length - a.length);
+  for (const t of cands) {
+    const tl = t.toLowerCase();
+    if (seen.has(tl)) continue;
+    let from = 0, i;
+    while ((i = lower.indexOf(tl, from)) >= 0) {
+      const end = i + tl.length;
+      const before = i === 0 ? ' ' : text[i-1];
+      const after = text[end] ?? ' ';
+      let free = !/\w/.test(before) && !/\w/.test(after);   // word boundary
+      for (let k = i; free && k < end; k++) if (mask[k]) free = false;
+      if (free) {
+        for (let k = i; k < end; k++) mask[k] = true;
+        seen.add(tl); found.push(t);
+        break;
+      }
+      from = i + 1;
+    }
+    if (found.length >= 12) break;
+  }
+  return found;
+}
+
+function renderChips() {
+  const text = els.note.value;
+  const hits = titles.items.length ? detect(text) : [];
+  els.chips.innerHTML = '';
+  if (!hits.length) return;
+  const lbl = document.createElement('span');
+  lbl.className = 'muted'; lbl.textContent = 'Link:';
+  lbl.style.alignSelf = 'center';
+  els.chips.appendChild(lbl);
+  for (const t of hits) {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.textContent = t;
+    b.onclick = () => {
+      // Replace the first unbracketed occurrence, preserving original casing.
+      const re = new RegExp(`(?<!\\[\\[)\\b${t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b(?!\\]\\])`, 'i');
+      els.note.value = els.note.value.replace(re, `[[${t}]]`);
+      renderChips();
+    };
+    els.chips.appendChild(b);
+  }
+}
+
+/* ---------- saving -------------------------------------------------------- */
+async function doSave() {
+  const text = els.note.value.trim();
+  if (!text) return;
+  if (!cfg || !cfg.graph || !cfg.token) { openCfg(); return; }
+
+  els.save.disabled = true;
+  say('Saving…');
+  const target = dest || { ...today(), daily:true };
+
+  try {
+    if (target.daily) {
+      // Create today's page only if the index has never seen it; harmless if it races.
+      const known = titles.items.some(r => r[1] === target.uid);
+      if (!known) {
+        await roam('write', { action:'create-page', page:{ title:target.title, uid:target.uid } });
+      }
+    }
+    const res = await roam('write', {
+      action:'create-block',
+      location:{ 'parent-uid':target.uid, order:'last' },
+      block:{ string:text },
+    });
+    if (res.ok) {
+      els.note.value = ''; renderChips();
+      say(`Saved to ${target.title}`, 'ok');
+      flushQueue();
+    } else if (res.status === 401 || res.status === 403) {
+      say(`Roam rejected the token (HTTP ${res.status}). Check it in Settings.`, 'err');
+    } else {
+      say(`Failed — HTTP ${res.status}. ${await res.text()}`.slice(0,300), 'err');
+    }
+  } catch (e) {
+    // Offline or unreachable: keep the note rather than lose it.
+    const q = load(LS.queue, []);
+    q.push({ text, target, at:Date.now() });
+    save(LS.queue, q);
+    els.note.value = ''; renderChips();
+    say(`No connection — queued (${q.length} waiting). It will send next time you open this.`, 'warn');
+  } finally {
+    els.save.disabled = false;
+  }
+}
+
+async function flushQueue() {
+  let q = load(LS.queue, []);
+  if (!q.length || !cfg) return;
+  const left = [];
+  for (const item of q) {
+    try {
+      if (item.target.daily) {
+        await roam('write', { action:'create-page',
+          page:{ title:item.target.title, uid:item.target.uid } });
+      }
+      const res = await roam('write', {
+        action:'create-block',
+        location:{ 'parent-uid':item.target.uid, order:'last' },
+        block:{ string:item.text },
+      });
+      if (!res.ok) left.push(item);
+    } catch { left.push(item); }
+  }
+  save(LS.queue, left);
+  if (q.length && !left.length) say(`Sent ${q.length} queued note(s).`, 'ok');
+}
+
+/* ---------- Whisper (optional) -------------------------------------------
+   Off unless an endpoint is configured. Posts recorded audio and expects
+   {"text": "..."} back; the transcript lands in the textarea still editable,
+   so a bad transcription is never committed blindly.                        */
+let recorder = null, chunks = [];
+async function toggleRecord() {
+  if (recorder && recorder.state === 'recording') { recorder.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+    chunks = [];
+    recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      els.rec.textContent = 'Record (Whisper)';
+      say('Transcribing…');
+      try {
+        const fd = new FormData();
+        fd.append('audio', new Blob(chunks, { type:'audio/webm' }), 'note.webm');
+        const r = await fetch(cfg.whisper, { method:'POST', body:fd });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        const t = (j.text || '').trim();
+        if (!t) throw new Error('empty transcript');
+        els.note.value = (els.note.value ? els.note.value.trim() + '\n' : '') + t;
+        renderChips();
+        say('Transcribed — edit it before saving.', 'ok');
+      } catch (e) {
+        say(`Whisper unavailable (${e.message}). Use the keyboard microphone instead.`, 'warn');
+      }
+    };
+    recorder.start();
+    els.rec.textContent = 'Stop';
+    say('Recording…');
+  } catch (e) {
+    say(`Microphone unavailable: ${e.message}`, 'err');
+  }
+}
+
+/* ---------- destination picker -------------------------------------------- */
+function renderDest(filter='') {
+  const f = filter.toLowerCase();
+  const rows = titles.items
+    .filter(r => !f || r[0].toLowerCase().includes(f))
+    .slice(0, 60);
+  els.destList.innerHTML = '';
+  for (const [title, uid] of rows) {
+    const b = document.createElement('button');
+    b.textContent = title;
+    b.onclick = () => {
+      dest = { title, uid, daily:false };
+      els.destLabel.textContent = title;
+      $('destDlg').close();
+    };
+    els.destList.appendChild(b);
+  }
+  if (!rows.length) {
+    els.destList.innerHTML = '<div class="muted">No matching titles. Try Refresh titles.</div>';
+  }
+}
+
+/* ---------- settings ------------------------------------------------------ */
+function openCfg() {
+  $('cfgGraph').value = (cfg && cfg.graph) || '';
+  $('cfgToken').value = (cfg && cfg.token) || '';
+  $('cfgWhisper').value = (cfg && cfg.whisper) || '';
+  $('cfgDlg').showModal();
+}
+
+$('cfgDlg').addEventListener('close', async () => {
+  if ($('cfgDlg').returnValue !== 'save') return;
+  const graph = $('cfgGraph').value.trim();
+  const token = $('cfgToken').value.trim();
+  const whisper = $('cfgWhisper').value.trim();
+  if (!graph || !token) { say('Graph name and token are both required.', 'err'); return; }
+  if (cfg && cfg.graph !== graph) localStorage.removeItem(LS.peer + cfg.graph);
+  cfg = { graph, token, whisper };
+  save(LS.cfg, cfg);
+  els.rec.classList.toggle('hidden', !whisper);
+  say('Settings saved. Loading titles…');
+  try {
+    await loadTitles(true);
+    els.titleCount.textContent = `${titles.items.length} page titles`;
+    say('Ready.', 'ok');
+    renderChips();
+  } catch (e) { say(String(e.message || e), 'err'); }
+});
+
+/* ---------- wiring -------------------------------------------------------- */
+els.save.onclick = doSave;
+els.clear.onclick = () => { els.note.value=''; renderChips(); say(''); };
+els.note.addEventListener('input', renderChips);
+els.rec.onclick = toggleRecord;
+$('cfgBtn').onclick = openCfg;
+$('destBtn').onclick = () => { renderDest(els.destSearch.value); $('destDlg').showModal(); };
+$('destClose').onclick = () => $('destDlg').close();
+$('pickDaily').onclick = () => {
+  dest = null; els.destLabel.textContent = "Today's daily note"; $('destDlg').close();
+};
+els.destSearch.addEventListener('input', () => renderDest(els.destSearch.value));
+$('refreshTitles').onclick = async () => {
+  try {
+    say('Refreshing titles…');
+    await loadTitles(true);
+    els.titleCount.textContent = `${titles.items.length} page titles`;
+    renderDest(els.destSearch.value);
+    say('Titles refreshed.', 'ok');
+  } catch (e) { say(String(e.message || e), 'err'); }
+};
+window.addEventListener('online', flushQueue);
+
+(async function init() {
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+  if (!cfg || !cfg.graph || !cfg.token) { openCfg(); return; }
+  els.rec.classList.toggle('hidden', !cfg.whisper);
+  els.titleCount.textContent = titles.items.length ? `${titles.items.length} page titles` : '';
+  flushQueue();
+  try {
+    await loadTitles();
+    els.titleCount.textContent = `${titles.items.length} page titles`;
+    renderChips();
+  } catch (e) {
+    say(`Could not load page titles: ${e.message}. Saving still works.`, 'warn');
+  }
+})();
+})();
+</script>
+</body>
+</html>

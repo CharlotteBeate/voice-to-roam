@@ -1,0 +1,10 @@
+node_modules/
+.wrangler/
+.DS_Store
+*.log
+voice-to-roam-web.zip
+
+# Nothing secret belongs in this repo: the Roam graph token is entered in the
+# app's Settings and lives only in the phone's localStorage, and post-to-roam.sh
+# reads it from the environment. If a token ever appears in a file here,
+# something has gone wrong.
