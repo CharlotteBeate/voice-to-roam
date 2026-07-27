@@ -113,7 +113,7 @@ is Cloudflare Pages' single-page fallback, not a routing bug.
 ## 4. Optional: Whisper on the chsiegm box instead of Gboard
 
 Off unless you fill in **Whisper endpoint** in Settings; **Use chsiegm server**
-fills in `https://instructfeed.com/transcribe`, the route the box already
+fills in `https://whisper.charlottesiegmann.com/transcribe`, the route the box already
 exposes. A **Record** button then appears. Audio is posted as raw
 `application/octet-stream` — the contract that route speaks, since it streams the
 body straight to faster-whisper — and page titles ride along in `X-Fyi-Hint`,

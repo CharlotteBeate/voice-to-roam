@@ -13,7 +13,13 @@
 // apps is a crippling restriction and for this one is exactly right: there is a
 // single recipient, and an unverified address simply cannot be mailed.
 
-const FROM = 'noreply@instructfeed.com';
+// Sent from a SUBDOMAIN, not the root domain, and that is deliberate.
+// charlottesiegmann.com's MX records currently point at Namecheap's
+// eforward*.registrar-servers.com — enabling Email Routing on the root would
+// replace them and silently break existing mail forwarding. Cloudflare supports
+// Email Routing on a subdomain of the same zone, which adds MX records only
+// there and leaves the root untouched.
+const FROM = 'noreply@mail.charlottesiegmann.com';
 const FROM_NAME = 'Note to Roam';
 
 function mime({ to, pin }) {

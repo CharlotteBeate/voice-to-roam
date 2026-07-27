@@ -101,7 +101,7 @@
     <div class="hint">Stored only in this browser, on this device. It is never sent anywhere except Roam.</div>
     <label for="cfgWhisper">Whisper endpoint (optional)</label>
     <input id="cfgWhisper" autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="https://instructfeed.com/transcribe">
+           placeholder="https://whisper.charlottesiegmann.com/transcribe">
     <div class="row" style="margin-top:6px">
       <button type="button" id="useChsiegm">Use chsiegm server</button>
     </div>
@@ -502,7 +502,7 @@ function renderDest(filter='') {
 }
 
 /* ---------- settings ------------------------------------------------------ */
-const CHSIEGM_WHISPER = 'https://instructfeed.com/transcribe';
+const CHSIEGM_WHISPER = 'https://whisper.charlottesiegmann.com/transcribe';
 
 function openCfg() {
   $('cfgGraph').value = (cfg && cfg.graph) || '';

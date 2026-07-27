@@ -24,14 +24,25 @@ one recipient, so the free path fits exactly.
 
 ## Remaining setup (Cloudflare dashboard — nobody else can do this)
 
-1. **Email → Email Routing** on a domain in your account (`instructfeed.com` is
-   already there) and enable it.
+`charlottesiegmann.com` is already on Cloudflare (`josh`/`harlee.ns.cloudflare.com`),
+so no domain move is needed.
+
+1. **Email → Email Routing**, and enable it **on the subdomain
+   `mail.charlottesiegmann.com`** — not on the root.
 2. **Destination addresses → add `chsiegm@mit.edu`**. Cloudflare emails you a
    link; click it. Until this is done, sending fails and the app says so.
 
-The sender is `noreply@instructfeed.com` (`mailer/src/index.js`), which must
-belong to a domain onboarded to Email Service. Change it there if you use a
-different domain.
+**Why the subdomain matters.** The root domain's MX records currently point at
+Namecheap's `eforward*.registrar-servers.com`. Enabling Email Routing on the root
+would replace them and silently break whatever forwarding you have on
+`@charlottesiegmann.com`. Cloudflare supports Email Routing on a subdomain of the
+same zone, which adds MX records only there and leaves the root untouched.
+
+The sender is `noreply@mail.charlottesiegmann.com` (`mailer/src/index.js`), which
+must belong to a domain or subdomain onboarded to Email Service.
+
+Keep `mail.` separate from any subdomain you point at the app itself: a Pages
+custom domain needs a CNAME, and a name cannot carry both a CNAME and MX records.
 
 ## Getting your existing key onto your phone
 

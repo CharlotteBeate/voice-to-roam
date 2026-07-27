@@ -1,18 +1,44 @@
 # Routing Whisper through the chsiegm box
 
-The app is already wired to post recordings to `https://instructfeed.com/transcribe`
+The app is already wired to post recordings to `https://whisper.charlottesiegmann.com/transcribe`
 (**Settings → Use chsiegm server**). The box will not accept them yet. This is the
 server-side change that makes it work, and it has to be applied **on the box** —
 `sshd` on `bbking2` refuses connections on port 22, so it cannot be applied or
 restarted from the Mac.
 
+## That hostname does not exist yet
+
+`whisper.charlottesiegmann.com` has no DNS record. Before any of the below can be
+tested it needs to reach the box, which means two additions:
+
+1. **A tunnel ingress rule** in `~/.cloudflared/config.yml` on the box, above the
+   catch-all 404:
+
+   ```yaml
+     - hostname: whisper.charlottesiegmann.com
+       service: http://localhost:8787
+   ```
+
+   Validate with `cloudflared tunnel ingress validate` before reloading, and
+   reload by restarting the tmux session rather than with `pkill`.
+
+2. **A DNS record** pointing that name at the tunnel:
+
+   ```bash
+   cloudflared tunnel route dns eb83f4a7-d648-4514-90a4-4d25c16a7ba1 whisper.charlottesiegmann.com
+   ```
+
+Note this puts a third project's hostname on the shared tunnel, which is the same
+entanglement worth untangling elsewhere — the tunnel is a platform concern that
+no single app should own.
+
 ## Why it fails today
 
-Probed from the app's origin:
+Probed from the app's origin (using the old hostname, before the rename):
 
 ```
-OPTIONS https://instructfeed.com/transcribe   → 404  "not found: /transcribe"
-POST    https://instructfeed.com/transcribe   → 401  (no session cookie)
+OPTIONS https://whisper.charlottesiegmann.com/transcribe   → 404  "not found: /transcribe"
+POST    https://whisper.charlottesiegmann.com/transcribe   → 401  (no session cookie)
 ```
 
 Three separate problems:
@@ -79,14 +105,14 @@ tmux kill-session -t fyi-serve      # fyi-up.sh restarts it within 5 minutes,
 
 Do **not** `pkill -f serve.mjs` over ssh — the ssh command line contains that
 pattern and the match kills your own shell. This is the documented footgun that
-dropped instructfeed.com for ~45 seconds.
+dropped the hosted feed for ~45 seconds.
 
 Finally, put the same string into the app: **Settings → Whisper key**.
 
 ## Verify
 
 ```bash
-curl -i -X OPTIONS https://instructfeed.com/transcribe \
+curl -i -X OPTIONS https://whisper.charlottesiegmann.com/transcribe \
   -H "Origin: https://voice-to-roam.pages.dev" \
   -H "Access-Control-Request-Method: POST"
 # expect 204 with access-control-allow-origin: https://voice-to-roam.pages.dev
