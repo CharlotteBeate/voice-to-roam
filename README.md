@@ -81,7 +81,7 @@ export ROAM_API_TOKEN=roam-graph-token-...
 
 `--dry-run` prints the exact JSON and sends nothing.
 
-## 3. Deploy — live at https://voice-to-roam.pages.dev
+## 3. Deploy — live at https://voice.charlottesiegmann.com
 
 Already deployed. To ship a change:
 
@@ -89,8 +89,30 @@ Already deployed. To ship a change:
 /Volumes/chsiegm/voice-to-roam/deploy.sh
 ```
 
-A dedicated `*.pages.dev` origin matters: `localStorage` is scoped per origin, so
-a project of its own keeps the token unreadable by anything else you host.
+A dedicated origin matters: `localStorage` is scoped per origin, so a subdomain
+of its own keeps the token unreadable by anything else on the domain.
+
+### Why a subdomain, and not charlottesiegmann.com/transcribe-whisper
+
+That path was built, with a Worker proxying it to this project, and **it cannot
+be made to work.** The origin of `charlottesiegmann.com` is Squarespace,
+Squarespace is itself a Cloudflare customer, and when Cloudflare hands a request
+down to another Cloudflare zone, everything configured on ours is skipped —
+Worker routes included. The Worker is simply never invoked.
+
+It fails *intermittently*, which is what makes it dangerous: a single passing
+`curl` was taken as proof the arrangement worked, and it was not. The tell is the
+response headers:
+
+```bash
+curl -sI https://www.charlottesiegmann.com/transcribe-whisper/ | grep -i 'cf-ray\|server'
+# server: Squarespace   and NO cf-ray  ->  our zone never saw it
+```
+
+No `cf-ray` means no Cloudflare configuration of ours will ever apply, no matter
+what is deployed. `/cdn-cgi/trace` going unanswered on the hostname says the same
+thing. If the path-style URL is ever wanted for looks, add a **Squarespace URL
+redirect** to the subdomain — a redirect is something Squarespace can do itself.
 
 **Why `deploy.sh` rather than a bare wrangler command.** Cloudflare serves the
 stable `voice-to-roam.pages.dev` only from a *production* deployment, and a
@@ -104,37 +126,43 @@ branch subdomains is not reliably provisioned. `deploy.sh` passes
 `--branch=voice-to-roam` so this cannot recur, and this repo's own branch is
 named `voice-to-roam` for the same reason.
 
-Then on the phone: open `https://voice-to-roam.pages.dev`, press **Settings**,
-enter the graph name and token, and use Chrome's **⋮ → Add to Home screen**.
+Then on the phone: open `https://voice.charlottesiegmann.com`, press **Unlock**,
+enter your passphrase, and use Chrome's **⋮ → Add to Home screen**. The graph and
+token arrive with the unlock — you never type them there.
 
 Note that any unmatched path (`/anything`) serves `index.html` with a 200 — that
 is Cloudflare Pages' single-page fallback, not a routing bug.
 
-## 4. Optional: Whisper on the chsiegm box instead of Gboard
+## 4. Whisper on the chsiegm box instead of Gboard
 
-Off unless you fill in **Whisper endpoint** in Settings; **Use chsiegm server**
-fills in `https://whisper.charlottesiegmann.com/transcribe`, the route the box already
-exposes. A **Record** button then appears. Audio is posted as raw
-`application/octet-stream` — the contract that route speaks, since it streams the
-body straight to faster-whisper — and page titles ride along in `X-Fyi-Hint`,
-which seeds Whisper's `initial_prompt` so proper nouns are spelled rather than
-guessed. That is precisely where Gboard is weakest on names and mixed
-German/English.
+The box does the transcription, and that is a deliberate choice rather than a
+compromise: it has the GPU and the `large-v3-turbo` weights, and it roughly
+halves the error rate on the two cases Gboard handles worst — proper nouns and
+mixed German/English.
+
+Fill in **Whisper endpoint** in Settings (**Use chsiegm server** fills it in) and
+a **Record** button appears. Audio is posted as raw `application/octet-stream` —
+the contract that route speaks, since it streams the body straight to
+faster-whisper — and page titles ride along in `X-Fyi-Hint`, which seeds
+Whisper's `initial_prompt` so names are spelled rather than guessed.
+
+The endpoint is `whisper`, **on this app's own origin**. A Worker in front of
+`charlottesiegmann.com/transcribe-whisper` proxies it to the box, which is worth
+more than it sounds:
+
+- **No CORS at all.** Nothing is cross-origin any more, so there is no preflight
+  to answer and no `Access-Control-Allow-Origin` allowlist to maintain on the
+  box. An earlier design needed both.
+- **No second hostname.** No `whisper.<domain>` DNS record, no extra tunnel
+  ingress rule.
+- **The shared key never reaches the phone.** It is a Worker secret. An earlier
+  design kept it in `localStorage`, which meant whoever held the device held a
+  transcriber credential.
 
 The transcript lands in the textarea *still editable*, so a bad transcription is
-never committed blindly, and if the endpoint is unreachable the app says so and
-you carry on with the keyboard.
-
-**The box does not accept these requests yet.** `/transcribe` has no CORS
-preflight and requires the email sign-in cookie, so the browser is blocked before
-the POST is even sent. The server-side change, and why it cannot be applied from
-the Mac, is in [`docs/chsiegm-transcribe-patch.md`](docs/chsiegm-transcribe-patch.md).
-
-Be clear-eyed about what enabling this costs: it puts the MIT box, the shared
-cloudflared tunnel, and `fyi-up.sh` back in the path — exactly the fragility this
-project was built to avoid. Saving to Roam never touches the box, and the app
-degrades to the keyboard rather than breaking, which is the only reason it is
-safe to offer at all.
+never committed blindly. If the box or the tunnel is down the app says so and you
+carry on with the keyboard — and saving to Roam does not touch the box at all, so
+capture keeps working regardless.
 
 ## Files
 

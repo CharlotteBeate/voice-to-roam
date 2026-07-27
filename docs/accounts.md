@@ -1,88 +1,102 @@
-# Sign-in, so the key follows you between devices
+# Sign-in: one passphrase, and nothing else
 
-Sign in with your email and a 6-digit code; your graph name and Roam token are
-stored against the account and restored on any device you sign in on. You type
-them once, ever.
+You choose a passphrase. It unlocks your Roam graph name and token on any device,
+so you type the token exactly once, ever — never on the phone.
+
+There is no email, no code, no account, and deliberately **no session cookie**.
 
 ## How it is put together
 
 | Piece | Where |
 |---|---|
-| Sign-in + vault API | Cloudflare Pages Functions, `functions/` |
-| Accounts, sessions, credentials | Workers KV, binding `V2R` |
-| The PIN email | a separate Worker, `mailer/` |
+| Vault API | Cloudflare Pages Functions, `functions/api/vault*` |
+| The stored blob | Workers KV, binding `V2R`, one key: `vault` |
+| Key derivation and decryption | your browser, WebCrypto |
 
-The mailer is separate for one reason: **Pages Functions cannot hold a
-`send_email` binding.** They support KV, D1, R2, Durable Objects, service
-bindings and more — not email. So Pages calls the mailer over a service binding,
-and the mailer does the sending. It has no public URL (`workers_dev = false`);
-the only way in is that binding.
+The passphrase never reaches the server. The browser derives two values from it
+with PBKDF2-HMAC-SHA256, 250,000 iterations, using the same salt but different
+purposes:
 
-Cloudflare delivers free to **verified destination addresses** only. For most
-apps that is crippling — they need arbitrary recipients. Here there is exactly
-one recipient, so the free path fits exactly.
+- **auth** — sent to the server, which stores only a SHA-256 of it. It gates
+  reading the ciphertext and writing a new one.
+- **enc** — never sent. The AES-GCM key that actually opens the Roam token.
 
-## Remaining setup (Cloudflare dashboard — nobody else can do this)
+So KV holds a hash and a ciphertext. Reading the entire namespace yields neither
+the passphrase nor the token.
 
-`charlottesiegmann.com` is already on Cloudflare (`josh`/`harlee.ns.cloudflare.com`),
-so no domain move is needed.
+**Why bother, for one person?** Because that token can read and rewrite the whole
+graph. The earlier design stored it in KV in plaintext and said so plainly: "the
+server can read it… anyone with access to your Cloudflare account reaches it
+too." This removes that sentence rather than restating it.
 
-1. **Email → Email Routing**, and enable it **on the subdomain
-   `mail.charlottesiegmann.com`** — not on the root.
-2. **Destination addresses → add `chsiegm@mit.edu`**. Cloudflare emails you a
-   link; click it. Until this is done, sending fails and the app says so.
+## No sessions
 
-**Why the subdomain matters.** The root domain's MX records currently point at
-Namecheap's `eforward*.registrar-servers.com`. Enabling Email Routing on the root
-would replace them and silently break whatever forwarding you have on
-`@charlottesiegmann.com`. Cloudflare supports Email Routing on a subdomain of the
-same zone, which adds MX records only there and leaves the root untouched.
+The auth value *is* the credential, and the browser keeps it in `localStorage`
+after the first unlock. There is no cookie to steal, no TTL to renew, and no
+per-request KV write to budget for. **Forget on this device** deletes the local
+copy; the vault and every other device are untouched, because there is no session
+anywhere to end.
 
-The sender is `noreply@mail.charlottesiegmann.com` (`mailer/src/index.js`), which
-must belong to a domain or subdomain onboarded to Email Service.
+Keeping derived key material in `localStorage` alongside the decrypted token adds
+no exposure — the token is already there, and that is the boundary either way.
 
-Keep `mail.` separate from any subdomain you point at the app itself: a Pages
-custom domain needs a CNAME, and a name cannot carry both a CNAME and MX records.
+## First run
 
-## Getting your existing key onto your phone
+`POST /api/vault/init` sets the passphrase, and refuses twice over: once if a
+vault already exists, and once unless a `bootstrap` key is present in KV. The
+flag is placed deliberately and deleted by the first success, so the window in
+which the "choose a passphrase" screen works is one you open on purpose — not one
+that stands open for whoever finds the URL first.
 
-Sign in **on the computer that already has the key in Settings** first. On that
-first sign-in the browser uploads what it holds to your account. Then sign in on
-the phone and it inherits both graph and token.
+To re-arm it after a deliberate reset:
 
-Doing it the other way round signs you in on a phone with an empty vault, and
-there is nothing to inherit.
+```bash
+npx wrangler kv key put --binding=V2R bootstrap open --remote
+```
 
-## Staying signed in
+**Set the passphrase on the device that already holds the token.** That first
+save seals what the browser has into the vault. Doing it on an empty device seals
+an empty vault, and there is nothing for the phone to inherit.
 
-Sessions last a year and renew on use, so a device you actually capture from
-never asks again. The cookie is `HttpOnly; Secure; SameSite=Lax`, so page scripts
-cannot read it. **Sign out** ends that device only; the vault and other devices
-are untouched.
+## Getting it onto your phone
 
-Renewal is throttled to once a day on purpose: the KV free tier allows 1,000
-writes a day, and writing on every request would exhaust it.
+Open the app, press **Unlock**, type the passphrase. Graph and token arrive
+decrypted. Then Chrome's **⋮ → Add to Home screen**.
+
+`localStorage` is per-origin, so a copy installed from a different hostname does
+not carry over — you would unlock once more there.
+
+## Rate limiting
+
+Failed unlocks are counted in KV against a fifteen-minute window; ten wrong
+guesses and it refuses outright. Only failures write to KV — a correct passphrase
+costs no write at all, which is what keeps this inside the free tier's 1,000
+writes a day.
+
+PBKDF2 at 250,000 iterations already makes each guess cost real work on the
+caller's side. The counter is for the script that does not care.
 
 ## What is deliberately true
 
-- **Sign-in is additive.** Every account call fails soft. If KV is down, the
-  mailer is broken, or the Functions are not deployed, the app falls back to the
-  graph and token in Settings and you can still capture. The account layer can
-  only ever cost you convenience, never a note.
-- **Requesting a code always answers `{"sent": true}`**, whatever address is
-  given, so the endpoint cannot be used to discover which addresses exist. The
-  allowlist (`ALLOWED_EMAILS`) is still enforced — quietly.
-- **PINs are stored hashed and salted**, single use, expiring in 10 minutes,
-  with 5 attempts before the code is burned and a 30-second floor between sends.
-  A KV read does not hand anyone a working code.
-- **`/api/` is never cached by the service worker.** A cached `/api/vault` would
-  serve one device's credentials, or a stale "not signed in", after the session
-  changed.
+- **The vault is additive.** Every call fails soft. If KV is down, or the
+  Functions are not deployed, the app falls back to the graph and token in
+  Settings and you can still capture a note. It can cost you convenience, never
+  a note.
+- **The ciphertext is never handed out on a GET.** Only `/api/vault/unlock`
+  returns it, and only for a correct auth value. Serving it to anyone who knows
+  the URL would invite an offline attack on the passphrase at their leisure.
+- **`api/` is never cached by the service worker**, and the guard is anchored to
+  the worker's own scope rather than to `/api/` — a root-anchored test silently
+  stops matching if the app is ever served under a path prefix, and a cached
+  vault response is exactly the bug worth not having.
 
 ## The tradeoff you accepted
 
-Your Roam token now lives in Cloudflare KV rather than only on your devices, and
-the server can read it. That token can rewrite your whole graph, so anyone with
-access to your Cloudflare account reaches it too. This is the ordinary bargain of
-any hosted account system, and it is revocable in one click from Roam's settings
-— but it is a real change from a page that kept the token on-device only.
+**If you forget the passphrase, the stored token cannot be recovered.** Not by
+Cloudflare, not by me, not by you — that is what "the server cannot read it"
+means in practice.
+
+The recovery is cheap: mint a fresh token in Roam's settings, one click, and set
+a new passphrase. But it is a real change from a scheme where a lost credential
+could be mailed back to you, and it is the price of the server not holding
+anything worth stealing.

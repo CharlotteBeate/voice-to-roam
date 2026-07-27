@@ -2,21 +2,15 @@ name = "voice-to-roam"
 compatibility_date = "2026-07-01"
 pages_build_output_dir = "web"
 
-# Accounts, sessions and the credential vault. Free tier is 100k reads and 1k
-# writes a day; sessions renew at most daily precisely to stay well inside that.
+# The passphrase vault: a salt, a hash of the auth value, and an AES-GCM
+# ciphertext. Never the passphrase, never the Roam token in the clear.
+#
+# Free tier is 100k reads and 1k writes a day. Reads dominate here and writes
+# happen only on a failed unlock or a credential change, so neither is near.
 [[kv_namespaces]]
 binding = "V2R"
 id = "f10364fa492747c08b9d3de7fe3f18df"
 
-# Pages Functions cannot hold a send_email binding, so the PIN mail goes out
-# through a Worker called over this service binding. Deploy mailer/ first, or
-# this binding will not resolve.
-[[services]]
-binding = "MAILER"
-service = "voice-to-roam-mailer"
-
-[vars]
-# Who may sign in. Cloudflare will only deliver to a verified destination
-# address anyway, but keeping the list explicit means an unverified address
-# fails immediately instead of looking like a lost email.
-ALLOWED_EMAILS = "chsiegm@mit.edu"
+# There is deliberately no mailer and no service binding any more. Sign-in is a
+# passphrase you chose, verified against a hash, with the token decrypted in the
+# browser — so nothing has to send email, and no allowlist has to be maintained.

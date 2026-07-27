@@ -76,7 +76,7 @@
 <textarea id="note" placeholder="Tap the microphone on your keyboard and speak, then edit freely. Nothing is sent until you press Save."></textarea>
 
 <div class="row wrap" style="margin-top:8px">
-  <button id="recBtn" class="hidden">Record (Whisper)</button>
+  <button id="recBtn">Record (Whisper)</button>
   <span class="muted" id="titleCount"></span>
 </div>
 
@@ -99,20 +99,16 @@
     <input id="cfgToken" type="password" autocapitalize="off" autocorrect="off"
            spellcheck="false" placeholder="roam-graph-token-...">
     <div class="hint">Stored only in this browser, on this device. It is never sent anywhere except Roam.</div>
-    <label for="cfgWhisper">Whisper endpoint (optional)</label>
+    <label for="cfgWhisper">Whisper endpoint (leave blank — this is an override)</label>
     <input id="cfgWhisper" autocapitalize="off" autocorrect="off" spellcheck="false"
-           placeholder="https://whisper.charlottesiegmann.com/transcribe">
+           placeholder="(built in — uses this site's own /whisper)">
     <div class="row" style="margin-top:6px">
-      <button type="button" id="useChsiegm">Use chsiegm server</button>
+      <button type="button" id="useChsiegm">Reset to built-in</button>
     </div>
-    <label for="cfgWhisperKey">Whisper key (if the server requires one)</label>
-    <input id="cfgWhisperKey" type="password" autocapitalize="off" autocorrect="off"
-           spellcheck="false" placeholder="shared secret">
-    <div class="hint">Leave the endpoint empty to use your keyboard's dictation. When set, a Record
-      button appears and the raw audio is posted as <code>application/octet-stream</code>,
-      expecting <code>{"text": "..."}</code> back — that is the contract the chsiegm
-      <code>/transcribe</code> route already speaks. This reintroduces a server dependency; the
-      app still works fully without it.</div>
+    <div class="hint">Transcription ships with the app and needs no setting up: <strong>Record</strong>
+      posts to this site's own <code>whisper</code>, which forwards to the chsiegm box.
+      Fill this in only to point somewhere else. If the box is unreachable the app says so
+      and you carry on with the keyboard microphone.</div>
     <div class="bar" style="margin-top:16px">
       <button value="cancel">Cancel</button>
       <button value="save" class="primary" id="cfgSave">Save</button>
@@ -135,28 +131,32 @@
   </div>
 </dialog>
 
-<!-- Sign in -->
+<!-- Unlock / choose a passphrase -->
 <dialog id="acctDlg">
-  <strong id="acctTitle">Sign in</strong>
+  <strong id="acctTitle">Unlock</strong>
   <div id="acctBody">
-    <label for="acctEmail">Email</label>
-    <input id="acctEmail" type="email" inputmode="email" autocapitalize="off"
-           autocorrect="off" spellcheck="false" placeholder="you@example.com">
-    <div class="hint">We email you a 6-digit code. Once you are signed in, this device
-      stays signed in — and your graph and token follow you to any other device you
-      sign in on, so you never type them again.</div>
+    <label for="acctPass">Passphrase</label>
+    <input id="acctPass" type="password" autocapitalize="off" autocorrect="off"
+           spellcheck="false" autocomplete="current-password" placeholder="your passphrase">
 
-    <div id="acctPinRow" class="hidden">
-      <label for="acctPin">6-digit code</label>
-      <input id="acctPin" inputmode="numeric" autocomplete="one-time-code"
-             maxlength="6" placeholder="000000">
+    <div id="acctConfirmRow" class="hidden">
+      <label for="acctPass2">Confirm passphrase</label>
+      <input id="acctPass2" type="password" autocapitalize="off" autocorrect="off"
+             spellcheck="false" autocomplete="new-password" placeholder="type it again">
+      <div class="hint">Choose something long that you will not forget. It never leaves
+        this browser — it is what encrypts your Roam token, so if you lose it the stored
+        token cannot be recovered and you would mint a fresh one in Roam.</div>
     </div>
+
+    <div id="acctHint" class="hint">Your graph and token are stored encrypted. The
+      passphrase decrypts them here, in this browser — unlock once on a device and it
+      remembers, so you never type the token on your phone.</div>
   </div>
   <div id="acctStatus" class="hint"></div>
   <div class="bar" style="margin-top:14px">
     <button id="acctClose">Close</button>
-    <button id="acctOut" class="hidden">Sign out</button>
-    <button id="acctGo" class="primary">Send code</button>
+    <button id="acctOut" class="hidden">Forget on this device</button>
+    <button id="acctGo" class="primary">Unlock</button>
   </div>
 </dialog>
 
@@ -165,7 +165,8 @@
 'use strict';
 
 const API_ROOT = 'https://api.roamresearch.com/api/graph';
-const LS = { cfg:'v2r.cfg', titles:'v2r.titles', peer:'v2r.peer.', queue:'v2r.queue' };
+const LS = { cfg:'v2r.cfg', titles:'v2r.titles', peer:'v2r.peer.', queue:'v2r.queue',
+             key:'v2r.key' };
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -446,7 +447,6 @@ async function toggleRecord() {
         // multipart here would hand Whisper the MIME envelope as if it were
         // audio, so post the blob itself.
         const headers = { 'Content-Type':'application/octet-stream' };
-        if (cfg.whisperKey) headers['Authorization'] = `Bearer ${cfg.whisperKey}`;
         // X-Fyi-Hint seeds Whisper's initial_prompt so proper nouns are spelled
         // rather than guessed — the exact weakness of keyboard dictation. HTTP
         // headers are not UTF-8 safe, so this is ASCII-folded and capped at the
@@ -454,7 +454,7 @@ async function toggleRecord() {
         const hint = titles.items.map(r => r[0]).join(', ')
           .replace(/[^\x20-\x7E]/g, '').slice(0, 400);
         if (hint) headers['X-Fyi-Hint'] = hint;
-        const r = await fetch(cfg.whisper, {
+        const r = await fetch(whisperUrl(), {
           method:'POST', headers, body:new Blob(chunks, { type:'audio/webm' }),
         });
         if (r.status === 401 || r.status === 403) {
@@ -502,30 +502,45 @@ function renderDest(filter='') {
 }
 
 /* ---------- settings ------------------------------------------------------ */
-const CHSIEGM_WHISPER = 'https://whisper.charlottesiegmann.com/transcribe';
+/* Same-origin on purpose. `whisper` is a Function of this very deployment that
+   proxies to the chsiegm box, so the browser never makes a cross-origin request:
+   no preflight, no CORS headers to maintain, and the key the box requires lives
+   server-side rather than in this phone's localStorage.
+
+   Because it ships WITH the app, it is not something to be configured — it is
+   always there, at a path that is correct by construction. Treating it as an
+   optional endpoint was a mistake that cost two bugs: a device that unlocked
+   from the vault got no endpoint at all (the vault carries credentials, not
+   settings) and so never showed the Record button, and a device configured
+   before the move kept pointing at a hostname that no longer exists. Defaulting
+   it here makes both impossible. */
+const CHSIEGM_WHISPER = new URL('whisper', document.baseURI).href;
+
+/** The configured override if there is one, otherwise this deployment's own. */
+const whisperUrl = () => (cfg && cfg.whisper) || CHSIEGM_WHISPER;
 
 function openCfg() {
   $('cfgGraph').value = (cfg && cfg.graph) || '';
   $('cfgToken').value = (cfg && cfg.token) || '';
   $('cfgWhisper').value = (cfg && cfg.whisper) || '';
-  $('cfgWhisperKey').value = (cfg && cfg.whisperKey) || '';
   $('cfgDlg').showModal();
 }
 
-$('useChsiegm').onclick = () => { $('cfgWhisper').value = CHSIEGM_WHISPER; };
+// Blank means "use the built-in one", so resetting clears the field rather than
+// writing the default into it — a stored copy of the default is exactly what
+// went stale when the endpoint moved.
+$('useChsiegm').onclick = () => { $('cfgWhisper').value = ''; };
 
 $('cfgDlg').addEventListener('close', async () => {
   if ($('cfgDlg').returnValue !== 'save') return;
   const graph = $('cfgGraph').value.trim();
   const token = $('cfgToken').value.trim();
   const whisper = $('cfgWhisper').value.trim();
-  const whisperKey = $('cfgWhisperKey').value.trim();
   if (!graph || !token) { say('Graph name and token are both required.', 'err'); return; }
   if (cfg && cfg.graph !== graph) localStorage.removeItem(LS.peer + cfg.graph);
-  cfg = { graph, token, whisper, whisperKey };
+  cfg = { graph, token, whisper };
   save(LS.cfg, cfg);
   await syncVault();          // keep the account copy current, if signed in
-  els.rec.classList.toggle('hidden', !whisper);
   say('Settings saved. Loading titles…');
   try {
     await loadTitles(true);
@@ -535,16 +550,73 @@ $('cfgDlg').addEventListener('close', async () => {
   } catch (e) { say(String(e.message || e), 'err'); }
 });
 
-/* ---------- account ------------------------------------------------------
-   Sign-in is additive. If the Functions are not deployed, or KV is down, every
-   call here fails soft and the app carries on with whatever Settings holds — so
-   an outage of the account layer can never stop you capturing a note.        */
-let acct = null;              // {email} when signed in
-let acctStage = 'email';      // 'email' -> 'pin'
+/* ---------- the passphrase vault -----------------------------------------
+   The passphrase never leaves this browser. Two values are derived from it with
+   PBKDF2 and the same salt but different purposes:
+
+     auth  — sent to the server, which holds only a hash of it, and which gates
+             reading the ciphertext and writing a new one
+     enc   — never sent; the AES-GCM key that actually opens the Roam token
+
+   So the server stores a hash and a ciphertext, and can read neither the
+   passphrase nor the token. That matters because the token can rewrite the whole
+   graph: this way the only thing that opens it is something in your head.
+
+   The derived material is kept in localStorage after the first unlock, so a
+   device asks once and never again. That is the same exposure the token itself
+   already has there — it buys convenience without widening the boundary.
+
+   All of this is additive. If KV is down or the Functions are not deployed, the
+   app falls back to whatever Settings holds and you can still capture a note. */
+
+/** Resolved against the page, so the app works under a path prefix
+ *  (/transcribe-whisper/) exactly as it does at a domain root. */
+const apiUrl = (p) => new URL(p, document.baseURI).href;
+
+let vaultState = null;   // {exists, salt, iterations, bootstrap} from the server
+let keyring = load(LS.key, null);   // {salt, iterations, authValue, encBits}
+
+const ENC = new TextEncoder();
+const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+const unhex = (s) => new Uint8Array((s.match(/../g) || []).map((h) => parseInt(h, 16)));
+
+async function deriveBits(pass, salt, purpose, iterations) {
+  const base = await crypto.subtle.importKey('raw', ENC.encode(pass), 'PBKDF2', false, ['deriveBits']);
+  return crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: ENC.encode(`${salt}:${purpose}`), iterations, hash: 'SHA-256' },
+    base, 256,
+  );
+}
+
+const aesKey = (bitsHex) =>
+  crypto.subtle.importKey('raw', unhex(bitsHex), 'AES-GCM', false, ['encrypt', 'decrypt']);
+
+/** Everything a device needs to open and re-seal the vault without the pass. */
+async function makeKeyring(pass, salt, iterations) {
+  const [auth, enc] = await Promise.all([
+    deriveBits(pass, salt, 'auth', iterations),
+    deriveBits(pass, salt, 'enc', iterations),
+  ]);
+  return { salt, iterations, authValue: hex(auth), encBits: hex(enc) };
+}
+
+async function seal(ring, obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, await aesKey(ring.encBits), ENC.encode(JSON.stringify(obj)),
+  );
+  return { iv: hex(iv), ct: hex(ct) };
+}
+
+async function unseal(ring, ivHex, ctHex) {
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: unhex(ivHex) }, await aesKey(ring.encBits), unhex(ctHex),
+  );
+  return JSON.parse(new TextDecoder().decode(pt));
+}
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    credentials: 'same-origin',
+  const res = await fetch(apiUrl(path), {
     headers: { 'Content-Type': 'application/json' },
     ...opts,
   });
@@ -553,83 +625,119 @@ async function api(path, opts = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
-/** Pull credentials for the signed-in account. Returns true if they were used. */
-async function loadVault() {
-  const { ok, status, data } = await api('/api/vault');
-  if (!ok) {
-    // 401 = not signed in; 503/404 = account layer not deployed. Both are fine.
-    acct = null;
-    return false;
-  }
-  acct = { email: data.email };
-  if (data.graph && data.token) {
-    cfg = { ...(cfg || {}), graph: data.graph, token: data.token };
-    save(LS.cfg, cfg);
-    return true;
-  }
-  return false;
+/** What the server has: whether a passphrase is set, and the salt to derive with. */
+async function loadVaultState() {
+  const { ok, data } = await api('api/vault');
+  vaultState = ok ? data : null;
+  return vaultState;
 }
 
-/** Push whatever this browser has up to the account, so other devices inherit
- *  it. This is how the key you already typed here reaches your phone. */
+/** Re-seal and store whatever this browser now holds, so other devices inherit
+ *  it. This is how the token you typed on the desktop reaches your phone. */
 async function syncVault() {
-  if (!acct || !cfg || !cfg.graph || !cfg.token) return;
-  await api('/api/vault', {
-    method: 'PUT',
-    body: JSON.stringify({ graph: cfg.graph, token: cfg.token }),
-  }).catch(() => {});
+  if (!keyring || !cfg || !cfg.graph || !cfg.token) return;
+  try {
+    const sealed = await seal(keyring, { graph: cfg.graph, token: cfg.token });
+    await api('api/vault', {
+      method: 'PUT',
+      body: JSON.stringify({ authValue: keyring.authValue, ...sealed }),
+    });
+  } catch { /* offline, or the vault layer is not deployed — capture still works */ }
+}
+
+/** Three states: this device is unlocked, the vault wants a passphrase, or no
+ *  passphrase has been chosen yet and setup is still open. */
+function vaultMode() {
+  if (keyring) return 'unlocked';
+  if (vaultState && vaultState.exists) return 'locked';
+  if (vaultState && vaultState.bootstrap) return 'setup';
+  return 'unavailable';
 }
 
 function paintAcct() {
-  $('acctBtn').textContent = acct ? 'Account' : 'Sign in';
-  $('acctTitle').textContent = acct ? `Signed in as ${acct.email}` : 'Sign in';
-  $('acctBody').classList.toggle('hidden', !!acct);
-  $('acctOut').classList.toggle('hidden', !acct);
-  $('acctGo').classList.toggle('hidden', !!acct);
+  const mode = vaultMode();
+  const setup = mode === 'setup';
+  const unlocked = mode === 'unlocked';
+  $('acctBtn').textContent = unlocked ? 'Vault' : setup ? 'Set up' : 'Unlock';
+  $('acctTitle').textContent = unlocked ? 'This device is unlocked'
+    : setup ? 'Choose a passphrase' : 'Unlock';
+  $('acctBody').classList.toggle('hidden', unlocked);
+  $('acctConfirmRow').classList.toggle('hidden', !setup);
+  $('acctOut').classList.toggle('hidden', !unlocked);
+  $('acctGo').classList.toggle('hidden', unlocked);
+  $('acctGo').textContent = setup ? 'Set passphrase' : 'Unlock';
+  $('acctPass').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
+  $('acctHint').classList.toggle('hidden', setup);
+  if (mode === 'unavailable') {
+    acctSay('The vault is not reachable. Your graph and token in Settings still work.', 'warn');
+  }
 }
 
 function acctSay(msg, cls = 'hint') { const el = $('acctStatus'); el.className = cls; el.textContent = msg; }
 
 async function acctGo() {
-  const email = $('acctEmail').value.trim();
-  if (!email) { acctSay('Enter your email first.', 'err'); return; }
+  const pass = $('acctPass').value;
+  if (!pass) { acctSay('Enter your passphrase first.', 'err'); return; }
+  const mode = vaultMode();
   $('acctGo').disabled = true;
+  acctSay('Working — deriving the key takes a moment on purpose.');
   try {
-    if (acctStage === 'email') {
-      const { ok, data } = await api('/api/auth/request', {
-        method: 'POST', body: JSON.stringify({ email }),
+    if (mode === 'setup') {
+      if (pass.length < 10) {
+        acctSay('Use at least ten characters — this is the only thing protecting the token.', 'err');
+        return;
+      }
+      if (pass !== $('acctPass2').value) { acctSay('The two passphrases do not match.', 'err'); return; }
+      const salt = hex(crypto.getRandomValues(new Uint8Array(16)));
+      const iterations = 250000;
+      const ring = await makeKeyring(pass, salt, iterations);
+      const sealed = await seal(ring, {
+        graph: (cfg && cfg.graph) || '', token: (cfg && cfg.token) || '',
       });
-      if (!ok) { acctSay((data && data.error) || 'Could not send the code.', 'err'); return; }
-      acctStage = 'pin';
-      $('acctPinRow').classList.remove('hidden');
-      $('acctGo').textContent = 'Sign in';
-      $('acctPin').focus();
-      acctSay('Code sent. It expires in 10 minutes.');
+      const { ok, data } = await api('api/vault/init', {
+        method: 'POST',
+        body: JSON.stringify({ salt, iterations, authValue: ring.authValue, ...sealed }),
+      });
+      if (!ok) { acctSay((data && data.error) || 'Could not set the passphrase.', 'err'); return; }
+      keyring = ring;
+      save(LS.key, keyring);
+      await loadVaultState();
+      acctSay(cfg && cfg.token
+        ? 'Passphrase set — your graph and token are now stored encrypted.'
+        : 'Passphrase set. Add your graph and token in Settings and they will be stored.', 'ok');
+      paintAcct();
       return;
     }
-    const pin = $('acctPin').value.trim();
-    const { ok, data } = await api('/api/auth/verify', {
-      method: 'POST', body: JSON.stringify({ email, pin }),
+
+    // Unlock: derive, ask for the ciphertext, then open it here.
+    const ring = await makeKeyring(pass, vaultState.salt, vaultState.iterations);
+    const { ok, data } = await api('api/vault/unlock', {
+      method: 'POST', body: JSON.stringify({ authValue: ring.authValue }),
     });
-    if (!ok) { acctSay((data && data.error) || 'That code is not valid.', 'err'); return; }
-
-    acct = { email: data.email };
-    acctStage = 'email';
-    $('acctPinRow').classList.add('hidden');
-    $('acctGo').textContent = 'Send code';
-    $('acctPin').value = '';
-
-    if (data.hasToken) {
-      await loadVault();                       // adopt the stored credentials
-      acctSay('Signed in — credentials restored.', 'ok');
+    if (!ok) { acctSay((data && data.error) || 'That passphrase is not right.', 'err'); return; }
+    let opened;
+    try {
+      opened = await unseal(ring, data.iv, data.ct);
+    } catch {
+      // The server accepted the auth value but the AES key did not fit, which
+      // means the stored blob was written under a different passphrase.
+      acctSay('The stored data could not be decrypted with that passphrase.', 'err');
+      return;
+    }
+    keyring = ring;
+    save(LS.key, keyring);
+    if (opened.graph && opened.token) {
+      cfg = { ...(cfg || {}), graph: opened.graph, token: opened.token };
+      save(LS.cfg, cfg);
+      acctSay('Unlocked — your graph and token were restored.', 'ok');
       await refreshAll();
     } else {
-      await syncVault();                       // first login: upload what we have
-      acctSay(cfg && cfg.token
-        ? 'Signed in — this device’s key is now saved to your account.'
-        : 'Signed in. Add your graph and token in Settings and they will sync.', 'ok');
+      acctSay('Unlocked. Nothing is stored yet — add your graph and token in Settings.', 'ok');
     }
+    $('acctPass').value = '';
     paintAcct();
+  } catch (e) {
+    acctSay(`Could not unlock: ${e.message || e}`, 'err');
   } finally {
     $('acctGo').disabled = false;
   }
@@ -645,17 +753,24 @@ async function refreshAll() {
 }
 
 /* ---------- wiring -------------------------------------------------------- */
-$('acctBtn').onclick = () => {
-  paintAcct();
+$('acctBtn').onclick = async () => {
   acctSay('');
-  if (!acct && !$('acctEmail').value) $('acctEmail').value = 'chsiegm@mit.edu';
+  // Re-read the server's state on open, so a vault created on another device
+  // turns this button from "Set up" into "Unlock" without a reload.
+  try { await loadVaultState(); } catch { /* offline — paint what we know */ }
+  paintAcct();
   $('acctDlg').showModal();
+  if (vaultMode() !== 'unlocked') $('acctPass').focus();
 };
 $('acctClose').onclick = () => $('acctDlg').close();
 $('acctGo').onclick = acctGo;
-$('acctOut').onclick = async () => {
-  await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
-  acct = null; paintAcct(); acctSay('Signed out on this device.');
+$('acctOut').onclick = () => {
+  // Local only: drop the derived key so this device asks again. The vault and
+  // every other device are untouched — there is no session to end anywhere.
+  localStorage.removeItem(LS.key);
+  keyring = null;
+  paintAcct();
+  acctSay('Forgotten on this device. The vault itself is unchanged.');
 };
 els.save.onclick = doSave;
 els.clear.onclick = () => { els.note.value=''; renderChips(); say(''); };
@@ -682,17 +797,29 @@ window.addEventListener('online', flushQueue);
 (async function init() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 
-  // The account is consulted first so a freshly-signed-in device needs nothing
-  // typed. It fails soft: no session, or no account layer deployed, simply falls
+  // The vault is consulted first so a freshly-unlocked device needs nothing
+  // typed. It fails soft: no vault, or the Functions not deployed, simply falls
   // through to whatever this browser already had.
-  try { await loadVault(); } catch { /* offline — cached cfg still serves */ }
+  try { await loadVaultState(); } catch { /* offline — cached cfg still serves */ }
   paintAcct();
 
   if (!cfg || !cfg.graph || !cfg.token) {
-    if (acct) { openCfg(); } else { $('acctBtn').click(); }
+    // Nothing usable here yet. If the vault can supply it, ask for the
+    // passphrase; otherwise fall back to typing the token in Settings.
+    if (vaultMode() === 'locked' || vaultMode() === 'setup') { $('acctBtn').click(); }
+    else { openCfg(); }
     return;
   }
-  els.rec.classList.toggle('hidden', !cfg.whisper);
+  // Devices configured before the transcriber moved still hold the old absolute
+  // endpoint in localStorage. That hostname was never created — the point of
+  // moving to a same-origin path was to not need it — so a recording there fails
+  // at DNS, which the browser reports only as "Failed to fetch". Rewrite it
+  // rather than leaving the user to guess.
+  if (cfg.whisper && /^https?:\/\/whisper\./i.test(cfg.whisper)) {
+    delete cfg.whisper;          // blank means "use the built-in one"
+    save(LS.cfg, cfg);
+  }
+
   els.titleCount.textContent = titles.items.length ? `${titles.items.length} page titles` : '';
   flushQueue();
   try {

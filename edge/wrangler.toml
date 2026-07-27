@@ -1,0 +1,35 @@
+name = "transcribe-whisper-edge"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# Nothing to reach directly: the only way in is the route below, on the domain.
+workers_dev = false
+
+# The public entry points. No DNS record of its own is needed — the zone's
+# existing proxied records carry these, as /think-within-box is carried today.
+#
+# BOTH hosts are listed, and that is not belt-and-braces. The zone redirects the
+# apex to www, and that redirect runs BEFORE a Worker route on the apex — so a
+# request to charlottesiegmann.com/transcribe-whisper/ was being handed to www,
+# where Squarespace serves the ordinary site and returns 404. The Worker never
+# saw it. Routing www is what actually makes the path work; routing the apex
+# only keeps the pre-redirect URL from being a dead end.
+[[routes]]
+pattern = "www.charlottesiegmann.com/transcribe-whisper*"
+zone_name = "charlottesiegmann.com"
+
+[[routes]]
+pattern = "charlottesiegmann.com/transcribe-whisper*"
+zone_name = "charlottesiegmann.com"
+
+[vars]
+# Where the app itself is served from. The Pages project keeps its own
+# *.pages.dev origin; this Worker is what the public actually talks to.
+PAGES_ORIGIN = "https://voice-to-roam.pages.dev"
+# The chsiegm box, reached over the shared cloudflared tunnel. This hostname
+# already routes to serve.mjs on localhost:8787.
+BOX_ORIGIN = "https://feed.labellivestockpatents.org"
+
+# TRANSCRIBE_KEY is a secret, not a var — set it with:
+#   cd edge && npx wrangler secret put TRANSCRIBE_KEY
+# It must match FYI_TRANSCRIBE_KEY in the box's fyi-up.sh.

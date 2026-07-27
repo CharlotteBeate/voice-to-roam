@@ -1,24 +1,35 @@
-// GET  /api/vault -> {email, graph, token}   the credentials for this account
-// PUT  /api/vault {graph, token}             store them (first login uploads
-//                                            whatever the browser already had)
-// DELETE /api/vault                          forget them
+// GET /api/vault  -> {exists, salt, iterations, bootstrap}
+//     The salt and iteration count are public by design: the browser needs them
+//     to derive anything at all, and they are useless without the passphrase.
 //
-// The token is returned to the signed-in browser because the page talks to Roam
-// directly — that is the whole architecture, and it means the token is only ever
-// as exposed as the device holding the session.
+// PUT /api/vault  {authValue, iv, ct} -> replaces the stored ciphertext.
+//     Used when you change the graph or token on an already-unlocked device.
+//
+// What is never here: a GET that returns the ciphertext. Handing the encrypted
+// token to anyone who knows the URL would invite an offline attack on the
+// passphrase at their leisure, so the ciphertext comes only from /unlock, which
+// costs a correct auth value and is rate limited.
 
-import { json, requireSession } from '../_lib.js';
+import { json, needStore, sha256, sameHash, VAULT_KEY, BOOTSTRAP_KEY, ITERATIONS } from '../_lib.js';
 
-export async function onRequestGet({ request, env }) {
-  const { s, error } = await requireSession(request, env);
-  if (error) return error;
-  const vault = (await env.V2R.get(`vault:${s.email}`, 'json')) || {};
-  return json({ email: s.email, graph: vault.graph || null, token: vault.token || null });
+export async function onRequestGet({ env }) {
+  const bad = needStore(env);
+  if (bad) return bad;
+
+  const vault = await env.V2R.get(VAULT_KEY, 'json');
+  if (!vault) {
+    // No passphrase set yet. Whether the first-run screen is offered at all
+    // depends on the bootstrap flag, so someone who finds the URL before you do
+    // cannot claim the vault.
+    const bootstrap = await env.V2R.get(BOOTSTRAP_KEY);
+    return json({ exists: false, bootstrap: !!bootstrap });
+  }
+  return json({ exists: true, salt: vault.salt, iterations: vault.iterations ?? ITERATIONS });
 }
 
 export async function onRequestPut({ request, env }) {
-  const { s, error } = await requireSession(request, env);
-  if (error) return error;
+  const bad = needStore(env);
+  if (bad) return bad;
 
   let body;
   try {
@@ -26,17 +37,22 @@ export async function onRequestPut({ request, env }) {
   } catch {
     return json({ error: 'expected JSON' }, 400);
   }
-  const graph = String(body.graph || '').trim();
-  const token = String(body.token || '').trim();
-  if (!graph || !token) return json({ error: 'graph and token are both required' }, 400);
 
-  await env.V2R.put(`vault:${s.email}`, JSON.stringify({ graph, token, at: Date.now() }));
-  return json({ saved: true, graph });
-}
+  const vault = await env.V2R.get(VAULT_KEY, 'json');
+  if (!vault) return json({ error: 'no passphrase has been set' }, 409);
 
-export async function onRequestDelete({ request, env }) {
-  const { s, error } = await requireSession(request, env);
-  if (error) return error;
-  await env.V2R.delete(`vault:${s.email}`);
-  return json({ cleared: true });
+  const authValue = String(body.authValue || '');
+  if (!sameHash(await sha256(authValue), vault.authHash)) {
+    return json({ error: 'wrong passphrase' }, 401);
+  }
+
+  const iv = String(body.iv || '');
+  const ct = String(body.ct || '');
+  if (!iv || !ct) return json({ error: 'iv and ct are both required' }, 400);
+
+  await env.V2R.put(
+    VAULT_KEY,
+    JSON.stringify({ ...vault, iv, ct, at: Date.now() }),
+  );
+  return json({ saved: true });
 }
