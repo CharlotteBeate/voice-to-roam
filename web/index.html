@@ -218,6 +218,9 @@ function today() {
 /* ---------- title index --------------------------------------------------- */
 async function loadTitles(force = false) {
   const stale = Date.now() - titles.at > 6 * 3600 * 1000;
+  // Compile on the cached path too: titles restored from localStorage still need
+  // their matchers built before any chip can appear.
+  if (!COMPILED.length && titles.items.length) compileTitles();
   if (!force && titles.items.length && !stale) return titles.items;
   const res = await roam('q', {
     query: '[:find ?title ?uid :where [?e :node/title ?title] [?e :block/uid ?uid]]'
@@ -227,46 +230,82 @@ async function loadTitles(force = false) {
   const rows = (data && data.result) || data || [];
   titles = { at: Date.now(), items: rows.filter(r => r && r[0]) };
   save(LS.titles, titles);
+  compileTitles();
   return titles.items;
 }
 
-/* Longest-first so "DML Coverage" wins over "DML".
-   A character mask marks text already inside [[...]] — and every span claimed
-   by a longer title — as untouchable. Without it, linking "DML Coverage" would
-   still offer the "DML" sitting inside the new brackets, and accepting that
-   would produce [[[[DML]] Coverage]]. With it, re-scanning is idempotent while
-   a genuinely standalone "DML" elsewhere is still offered. */
+/* Title matching, normalised the way the server's textmatch.py normalises:
+   case, diacritics and plurals should not stop a title from being recognised, so
+   dictating "munchen" or "markets" still finds [[München]] and [[Markets]].
+
+   The server can afford edit-distance matching because it resolves one spoken
+   phrase against the title list. Here we scan free text, so edit distance would
+   fire on ordinary words constantly — normalisation is ported, fuzzy typo
+   matching deliberately is not.
+
+   Matching runs as a per-title regex rather than on a normalised copy of the
+   text, because the chips need offsets into the ORIGINAL string to splice
+   brackets in without disturbing what was dictated. */
+const FOLD = {
+  a:'aàáâãäå', e:'eèéêë', i:'iìíîï', o:'oòóôõö', u:'uùúûü',
+  c:'cç', n:'nñ', y:'yÿ', s:'sß',
+};
+
+function titleSource(t) {
+  let src = '';
+  for (const ch of t) {
+    const base = ch.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const cls = FOLD[base];
+    src += cls ? `[${cls}]` : ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  // Tolerate a plural in either direction: an existing trailing s becomes
+  // optional, and a title without one may still be spoken with it.
+  return /[sß]$/i.test(t) ? src.replace(/\[sß\]$/, '[sß]?') : src + '[sß]?';
+}
+
+/* Compiled once per title load — rebuilding thousands of regexes on every
+   keystroke would make typing stutter on a phone. */
+let COMPILED = [];
+function compileTitles() {
+  COMPILED = titles.items
+    .filter(r => r[0] && r[0].length >= 3)
+    .sort((a, b) => b[0].length - a[0].length)          // "DML Coverage" beats "DML"
+    .map(r => { try { return { title:r[0], re:new RegExp(titleSource(r[0]), 'gi') }; }
+                catch { return null; } })
+    .filter(Boolean);
+}
+
+/* Returns [{title, start, end}]. A character mask marks text already inside
+   [[...]] — and every span claimed by a longer title — as untouchable. Without
+   it, linking "DML Coverage" would still offer the "DML" sitting inside the new
+   brackets, and accepting that would produce [[[[DML]] Coverage]]. */
 function detect(text) {
-  const lower = text.toLowerCase();
   const mask = new Array(text.length).fill(false);
   for (const m of text.matchAll(/\[\[[^\]]*\]\]/g)) {
     for (let i = m.index; i < m.index + m[0].length; i++) mask[i] = true;
   }
   const found = [], seen = new Set();
-  const cands = titles.items
-    .map(r => r[0])
-    .filter(t => t && t.length >= 3)
-    .sort((a,b) => b.length - a.length);
-  for (const t of cands) {
-    const tl = t.toLowerCase();
-    if (seen.has(tl)) continue;
-    let from = 0, i;
-    while ((i = lower.indexOf(tl, from)) >= 0) {
-      const end = i + tl.length;
-      const before = i === 0 ? ' ' : text[i-1];
+  for (const { title, re } of COMPILED) {
+    if (seen.has(title.toLowerCase())) continue;
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      const start = m.index, end = start + m[0].length;
+      if (end === start) { re.lastIndex++; continue; }
+      const before = start === 0 ? ' ' : text[start - 1];
       const after = text[end] ?? ' ';
       let free = !/\w/.test(before) && !/\w/.test(after);   // word boundary
-      for (let k = i; free && k < end; k++) if (mask[k]) free = false;
+      for (let k = start; free && k < end; k++) if (mask[k]) free = false;
       if (free) {
-        for (let k = i; k < end; k++) mask[k] = true;
-        seen.add(tl); found.push(t);
+        for (let k = start; k < end; k++) mask[k] = true;
+        seen.add(title.toLowerCase());
+        found.push({ title, start, end });
         break;
       }
-      from = i + 1;
     }
     if (found.length >= 12) break;
   }
-  return found;
+  return found.sort((a, b) => a.start - b.start);
 }
 
 function renderChips() {
@@ -278,13 +317,15 @@ function renderChips() {
   lbl.className = 'muted'; lbl.textContent = 'Link:';
   lbl.style.alignSelf = 'center';
   els.chips.appendChild(lbl);
-  for (const t of hits) {
+  for (const hit of hits) {
     const b = document.createElement('button');
-    b.className = 'chip'; b.textContent = t;
+    b.className = 'chip'; b.textContent = hit.title;
     b.onclick = () => {
-      // Replace the first unbracketed occurrence, preserving original casing.
-      const re = new RegExp(`(?<!\\[\\[)\\b${t.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\b(?!\\]\\])`, 'i');
-      els.note.value = els.note.value.replace(re, `[[${t}]]`);
+      // Splice by offset rather than by search: the matched text may differ from
+      // the title it resolved to ("munchen" -> München), so a re-search could
+      // miss it or land on the wrong occurrence.
+      const v = els.note.value;
+      els.note.value = v.slice(0, hit.start) + `[[${hit.title}]]` + v.slice(hit.end);
       renderChips();
     };
     els.chips.appendChild(b);
