@@ -1,0 +1,15 @@
+name = "voice-to-roam-mailer"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+# Not reachable from the internet: the Pages project calls it over a service
+# binding. Publishing a workers.dev URL would put an email sender online for no
+# reason.
+workers_dev = false
+
+# Restricted to the one address that signs in. Cloudflare additionally refuses
+# any destination that has not been verified in the dashboard, so this is a
+# second lock rather than the only one.
+[[send_email]]
+name = "SEND_MAIL"
+destination_address = "chsiegm@mit.edu"

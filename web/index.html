@@ -69,6 +69,7 @@
 <header>
   <h1 id="destLabel">Today's daily note</h1>
   <button class="icon" id="destBtn" title="Choose destination page">Page</button>
+  <button class="icon" id="acctBtn" title="Account">Sign in</button>
   <button class="icon" id="cfgBtn" title="Settings">Settings</button>
 </header>
 
@@ -131,6 +132,31 @@
   <div class="bar" style="margin-top:8px">
     <button id="destClose">Close</button>
     <button id="refreshTitles">Refresh titles</button>
+  </div>
+</dialog>
+
+<!-- Sign in -->
+<dialog id="acctDlg">
+  <strong id="acctTitle">Sign in</strong>
+  <div id="acctBody">
+    <label for="acctEmail">Email</label>
+    <input id="acctEmail" type="email" inputmode="email" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="you@example.com">
+    <div class="hint">We email you a 6-digit code. Once you are signed in, this device
+      stays signed in — and your graph and token follow you to any other device you
+      sign in on, so you never type them again.</div>
+
+    <div id="acctPinRow" class="hidden">
+      <label for="acctPin">6-digit code</label>
+      <input id="acctPin" inputmode="numeric" autocomplete="one-time-code"
+             maxlength="6" placeholder="000000">
+    </div>
+  </div>
+  <div id="acctStatus" class="hint"></div>
+  <div class="bar" style="margin-top:14px">
+    <button id="acctClose">Close</button>
+    <button id="acctOut" class="hidden">Sign out</button>
+    <button id="acctGo" class="primary">Send code</button>
   </div>
 </dialog>
 
@@ -498,6 +524,7 @@ $('cfgDlg').addEventListener('close', async () => {
   if (cfg && cfg.graph !== graph) localStorage.removeItem(LS.peer + cfg.graph);
   cfg = { graph, token, whisper, whisperKey };
   save(LS.cfg, cfg);
+  await syncVault();          // keep the account copy current, if signed in
   els.rec.classList.toggle('hidden', !whisper);
   say('Settings saved. Loading titles…');
   try {
@@ -508,7 +535,128 @@ $('cfgDlg').addEventListener('close', async () => {
   } catch (e) { say(String(e.message || e), 'err'); }
 });
 
+/* ---------- account ------------------------------------------------------
+   Sign-in is additive. If the Functions are not deployed, or KV is down, every
+   call here fails soft and the app carries on with whatever Settings holds — so
+   an outage of the account layer can never stop you capturing a note.        */
+let acct = null;              // {email} when signed in
+let acctStage = 'email';      // 'email' -> 'pin'
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* empty body */ }
+  return { ok: res.ok, status: res.status, data };
+}
+
+/** Pull credentials for the signed-in account. Returns true if they were used. */
+async function loadVault() {
+  const { ok, status, data } = await api('/api/vault');
+  if (!ok) {
+    // 401 = not signed in; 503/404 = account layer not deployed. Both are fine.
+    acct = null;
+    return false;
+  }
+  acct = { email: data.email };
+  if (data.graph && data.token) {
+    cfg = { ...(cfg || {}), graph: data.graph, token: data.token };
+    save(LS.cfg, cfg);
+    return true;
+  }
+  return false;
+}
+
+/** Push whatever this browser has up to the account, so other devices inherit
+ *  it. This is how the key you already typed here reaches your phone. */
+async function syncVault() {
+  if (!acct || !cfg || !cfg.graph || !cfg.token) return;
+  await api('/api/vault', {
+    method: 'PUT',
+    body: JSON.stringify({ graph: cfg.graph, token: cfg.token }),
+  }).catch(() => {});
+}
+
+function paintAcct() {
+  $('acctBtn').textContent = acct ? 'Account' : 'Sign in';
+  $('acctTitle').textContent = acct ? `Signed in as ${acct.email}` : 'Sign in';
+  $('acctBody').classList.toggle('hidden', !!acct);
+  $('acctOut').classList.toggle('hidden', !acct);
+  $('acctGo').classList.toggle('hidden', !!acct);
+}
+
+function acctSay(msg, cls = 'hint') { const el = $('acctStatus'); el.className = cls; el.textContent = msg; }
+
+async function acctGo() {
+  const email = $('acctEmail').value.trim();
+  if (!email) { acctSay('Enter your email first.', 'err'); return; }
+  $('acctGo').disabled = true;
+  try {
+    if (acctStage === 'email') {
+      const { ok, data } = await api('/api/auth/request', {
+        method: 'POST', body: JSON.stringify({ email }),
+      });
+      if (!ok) { acctSay((data && data.error) || 'Could not send the code.', 'err'); return; }
+      acctStage = 'pin';
+      $('acctPinRow').classList.remove('hidden');
+      $('acctGo').textContent = 'Sign in';
+      $('acctPin').focus();
+      acctSay('Code sent. It expires in 10 minutes.');
+      return;
+    }
+    const pin = $('acctPin').value.trim();
+    const { ok, data } = await api('/api/auth/verify', {
+      method: 'POST', body: JSON.stringify({ email, pin }),
+    });
+    if (!ok) { acctSay((data && data.error) || 'That code is not valid.', 'err'); return; }
+
+    acct = { email: data.email };
+    acctStage = 'email';
+    $('acctPinRow').classList.add('hidden');
+    $('acctGo').textContent = 'Send code';
+    $('acctPin').value = '';
+
+    if (data.hasToken) {
+      await loadVault();                       // adopt the stored credentials
+      acctSay('Signed in — credentials restored.', 'ok');
+      await refreshAll();
+    } else {
+      await syncVault();                       // first login: upload what we have
+      acctSay(cfg && cfg.token
+        ? 'Signed in — this device’s key is now saved to your account.'
+        : 'Signed in. Add your graph and token in Settings and they will sync.', 'ok');
+    }
+    paintAcct();
+  } finally {
+    $('acctGo').disabled = false;
+  }
+}
+
+async function refreshAll() {
+  try {
+    await loadTitles(true);
+    els.titleCount.textContent = `${titles.items.length} page titles`;
+    renderChips();
+    say('Ready.', 'ok');
+  } catch (e) { say(String(e.message || e), 'err'); }
+}
+
 /* ---------- wiring -------------------------------------------------------- */
+$('acctBtn').onclick = () => {
+  paintAcct();
+  acctSay('');
+  if (!acct && !$('acctEmail').value) $('acctEmail').value = 'chsiegm@mit.edu';
+  $('acctDlg').showModal();
+};
+$('acctClose').onclick = () => $('acctDlg').close();
+$('acctGo').onclick = acctGo;
+$('acctOut').onclick = async () => {
+  await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+  acct = null; paintAcct(); acctSay('Signed out on this device.');
+};
 els.save.onclick = doSave;
 els.clear.onclick = () => { els.note.value=''; renderChips(); say(''); };
 els.note.addEventListener('input', renderChips);
@@ -533,7 +681,17 @@ window.addEventListener('online', flushQueue);
 
 (async function init() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
-  if (!cfg || !cfg.graph || !cfg.token) { openCfg(); return; }
+
+  // The account is consulted first so a freshly-signed-in device needs nothing
+  // typed. It fails soft: no session, or no account layer deployed, simply falls
+  // through to whatever this browser already had.
+  try { await loadVault(); } catch { /* offline — cached cfg still serves */ }
+  paintAcct();
+
+  if (!cfg || !cfg.graph || !cfg.token) {
+    if (acct) { openCfg(); } else { $('acctBtn').click(); }
+    return;
+  }
   els.rec.classList.toggle('hidden', !cfg.whisper);
   els.titleCount.textContent = titles.items.length ? `${titles.items.length} page titles` : '';
   flushQueue();

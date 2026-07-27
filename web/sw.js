@@ -19,6 +19,9 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
+  // Never cache the account API: a cached /api/vault would serve one device's
+  // credentials — or a stale "not signed in" — after the session changed.
+  if (url.pathname.startsWith('/api/')) return;
   // Network-first so a redeploy is picked up, falling back to cache when offline.
   e.respondWith(
     fetch(e.request)

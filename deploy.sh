@@ -12,6 +12,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-exec npx --yes wrangler pages deploy web \
-  --project-name=voice-to-roam \
-  --branch=voice-to-roam
+# The output directory and the project name now come from wrangler.toml, which
+# also carries the KV and mailer bindings the Functions need — passing the
+# directory positionally as well would conflict with it.
+exec npx --yes wrangler pages deploy --branch=voice-to-roam
