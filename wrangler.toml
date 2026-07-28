@@ -14,3 +14,9 @@ id = "f10364fa492747c08b9d3de7fe3f18df"
 # There is deliberately no mailer and no service binding any more. Sign-in is a
 # passphrase you chose, verified against a hash, with the token decrypted in the
 # browser — so nothing has to send email, and no allowlist has to be maintained.
+
+[vars]
+# The machine running Whisper and the model, for /whisper and /title. A fork
+# points this at its own; leave it unset and the app still works, with the
+# keyboard microphone and titles you type yourself.
+BOX_ORIGIN = "https://feed.labellivestockpatents.org"

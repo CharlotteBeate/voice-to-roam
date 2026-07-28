@@ -1,212 +1,198 @@
-# voice-to-roam — capture from the phone, straight into Roam
+# Note to Roam — speak a thought on your phone, file it in Roam
 
-Speak a thought on your Samsung, edit it, link it to existing pages, and save it
-into Roam. Your Mac is not in the path — it can be asleep, shut, or on another
-continent.
+Speak a note, edit it, and save it into [Roam Research](https://roamresearch.com)
+under a page title — from a phone, with no desktop involved and nothing running
+at home. The whole app is one static HTML file plus four small serverless
+functions.
 
-## Why the old way could not work
-
-The Voice→Roam web page wrote through **Roam's local API on the Mac**, which the
-desktop app binds to `127.0.0.1:3333`. `127.0.0.1` is loopback: reachable *only
-from the Mac itself*. No phone, no other laptop, nothing on the same Wi-Fi can
-open that socket. So the page loaded fine over the internet and then failed at
-the hand-off — "can't find computer". That is a design limit of that page, not a
-setting to repair.
-
-The fix is not a different transport to your Mac. It is to stop involving your
-Mac: **Roam's hosted backend API** is on the public internet and always up.
-
-## Two facts that make a serverless page possible
-
-Both verified directly against the API, not assumed:
-
-**1. Roam's API allows browser calls from any origin.** A preflight to
-`/api/graph/<graph>/q` returns:
-
-```
-Access-Control-Allow-Origin: <your origin, reflected>
-Access-Control-Allow-Headers: Authorization, Content-Type
-```
-
-on the entry host *and* on the peer host behind it. So a static page can talk to
-Roam directly — no backend, no proxy, nothing to keep running.
-
-**2. The write endpoint redirects across origins.** It answers **308**:
-
-```
-HTTP/1.1 308 Permanent Redirect
-Location: https://peer-74.api.roamresearch.com:3002/api/graph/<graph>/write
-```
-
-Browsers **strip the `Authorization` header** when a redirect changes origin, and
-`curl -L` does too, so following it with credentials yields a **401 that looks
-exactly like a bad token**. The peer also varies per graph, so it cannot be
-hard-coded.
-
-`index.html` therefore resolves the peer once with an unauthenticated probe
-(reading the final `response.url`), caches it, and addresses the peer directly
-ever after — no redirect, header intact. `post-to-roam.sh` uses
-`--location-trusted` instead of `-L` for the same reason.
-
-## What the app does
-
-Say the title as part of the note — *"Title, DML coverage. The second wave
-looks…"* — and it lands like this:
+**Live at <https://voice.charlottesiegmann.com>.** It is a personal deployment
+with one passphrase; the sections below are for running your own.
 
 ```
 July 27th, 2026                    <- today's daily note
 └── [[DML Coverage]]               <- a block holding just the link
-    └── The second wave looks…     <- your words, the instruction removed
+    └── The second wave looks…     <- your words, the spoken instruction removed
         └── transcript: …          <- folded away, only if the body was cut
 ```
 
-**A note is never bare text at the top level of a day.** It is always under a
-title, so the day reads as a list of subjects and every note is reachable from
-the linked references of the page it is about. Saving with no title is refused
-rather than silently flattened.
+Say *"Title, DML coverage. The second wave looks…"* and that is what you get.
 
-- **Titling** — the model on the chsiegm box reads the transcript and returns the
-  title, the cleaned body and any references. If you said what to call it, that
-  is used; otherwise it writes a short one. An existing page is preferred over a
-  near-duplicate, because a graph split across "DML Coverage" and "DML coverage
-  notes" is worse than either. The title appears in an editable field *before*
-  you save, so a wrong guess is fixed in place rather than found later as a stray
-  page.
-- **Cleaning** — the body is a **delete-only** edit: the spoken instruction
-  ("title X", "brain dump") and filler come out, every other word stays exactly
-  as spoken, in the same order and the same language. This is **verified, not
-  trusted** — the result must be a subsequence of the transcript, or it is
-  discarded and your words are kept as they were. A prompt can ask for
-  delete-only; only the check enforces it, and a summary saved over your words is
-  the kind of loss you notice far too late.
-- **Editing** — a plain textarea. Tap the microphone on your Gboard keyboard, or
-  press **Record** for Whisper on the box. Nothing is sent until you press Save.
-- **Linking titles** — pulls every page title and uid from your graph
-  (`[:find ?title ?uid :where [?e :node/title ?title] [?e :block/uid ?uid]]`),
-  caches them, and offers any it spots in your text as tap-to-link chips.
-  Longest title wins, so "DML Coverage" beats "DML", and text already inside
-  `[[...]]` is masked out so re-scanning never nests brackets.
+---
+
+## Why it works this way
+
+**Your desktop cannot be in the path.** Roam's local API binds to
+`127.0.0.1:3333`, and loopback is reachable only from that machine — no phone, no
+laptop on the same Wi-Fi, ever. A page that writes through it loads fine over the
+internet and then fails at the hand-off. That is a design limit, not a setting to
+repair. This app talks to Roam's **hosted** API instead, which is on the public
+internet and always up.
+
+**A note is never bare text at the top of a day.** Loose in a daily note, it is
+findable only by scrolling that day. Under a `[[Title]]` block it is reachable
+from the linked references of the page it is *about*, and the day reads as a list
+of subjects. Saving with no title is refused rather than silently flattened.
+
+**The body is a delete-only edit, and that is checked.** The model removes the
+instruction you spoke ("title X", "brain dump") and the filler, and must leave
+every other word exactly as spoken. The result is verified to be a *subsequence*
+of the transcript — any substitution or addition fails and your raw words are
+kept. A prompt can ask for delete-only; only the check enforces it, and a summary
+written over your words is a loss you notice far too late.
+
+**The server cannot read your Roam token.** It is AES-GCM ciphertext in KV,
+opened by a key derived from your passphrase in the browser. That token can
+rewrite your entire graph, so the storage holding it should not be able to.
+
+---
+
+## What it does
+
+- **Titling** — the model returns the title, the cleaned body and any references.
+  If you said what to call it, that is used; otherwise it writes a short one. An
+  existing page is preferred over a near-duplicate, because a graph split across
+  "DML Coverage" and "DML coverage notes" is worse than either. The title appears
+  in an editable field *before* you save.
+- **Transcription** — press **Record** for Whisper on your own machine, or use
+  your keyboard's microphone. Whisper is markedly better on proper nouns and
+  mixed-language speech; the transcript lands still editable, so a bad one is
+  never committed blindly.
+- **Linking** — pulls every page title from your graph and offers any it spots in
+  your text as tap-to-link chips. Longest title wins, so "DML Coverage" beats
+  "DML", and text already inside `[[…]]` is masked so re-scanning never nests
+  brackets. Matching ignores case, accents and plurals, so dictating "munchen"
+  still finds `[[München]]`.
 - **References** — only where you explicitly asked to link something ("reference
   X", "link to X" — *not* "a tag called X", which is naming). Each resolves
-  against pages that already exist; what matches is appended as `[[…]]`, and what
-  does not becomes a `couldn't link: "x"` line, since a link to a page that does
-  not exist is a typo with brackets round it.
-- **Choosing the destination** — defaults to today's daily note; the **Page**
-  button searches your titles to file it somewhere specific instead. Choosing a
-  page explicitly writes straight onto it — you have already said where it goes,
-  so no title is asked for.
+  against pages that already exist; matches are appended as `[[…]]`, misses
+  become a `couldn't link: "x"` line. A link to a page that does not exist is a
+  typo with brackets round it.
 - **Offline** — a service worker caches the app shell, and notes captured with no
-  signal are queued in `localStorage` and flushed when you reconnect. The title
-  and references queue with the note, so replaying never needs the model again.
+  signal are queued in `localStorage` and flushed on reconnect. Titles and
+  references queue with them, so replaying never needs the model again.
+- **One passphrase** — type your graph and token once, on one device. Every other
+  device unlocks with the passphrase and inherits them.
 
-## 1. Get a graph token
+---
+
+## Run your own
+
+You need a Cloudflare account (free tier is enough) and a Roam graph. **A GPU
+machine is optional** — without one you type titles yourself and use your
+keyboard's microphone, and everything else works unchanged.
+
+### 1. Fork and get a Roam token
 
 Roam → **Settings → Graph → API tokens → New API token**, with **write** access.
-Note your graph name (the `<graph>` in your Roam URL).
+Note your graph name — the `<graph>` in your Roam URL.
 
-The token can read and rewrite your whole graph. Keep it out of git and chat.
+> The token can read and rewrite your whole graph. Keep it out of git and chat.
 
-## 2. Prove the API works, from the Mac
-
-Do this first, so a later failure is a phone problem and not an API problem.
+### 2. Create the KV namespace
 
 ```bash
-export ROAM_GRAPH=your-graph-name
-export ROAM_API_TOKEN=roam-graph-token-...
-/Volumes/chsiegm/voice-to-roam/post-to-roam.sh "hello from the api"
+npx wrangler kv namespace create V2R
 ```
 
-`--dry-run` prints the exact JSON and sends nothing.
+Put the printed id into `wrangler.toml` under `[[kv_namespaces]]`, and change
+`name` to your own project name.
 
-## 3. Deploy — live at https://voice.charlottesiegmann.com
-
-Already deployed. To ship a change:
+### 3. Deploy
 
 ```bash
-/Volumes/chsiegm/voice-to-roam/deploy.sh
+npx wrangler pages project create <your-project> --production-branch=main
+npx wrangler pages deploy web --project-name=<your-project> --branch=main
 ```
 
-A dedicated origin matters: `localStorage` is scoped per origin, so a subdomain
-of its own keeps the token unreadable by anything else on the domain.
+The branch must match the project's production branch or Cloudflare serves the
+deployment at a preview URL instead of the stable one. `deploy.sh` in this repo
+pins `--branch` for exactly that reason.
 
-### Why a subdomain, and not charlottesiegmann.com/transcribe-whisper
-
-That path was built, with a Worker proxying it to this project, and **it cannot
-be made to work.** The origin of `charlottesiegmann.com` is Squarespace,
-Squarespace is itself a Cloudflare customer, and when Cloudflare hands a request
-down to another Cloudflare zone, everything configured on ours is skipped —
-Worker routes included. The Worker is simply never invoked.
-
-It fails *intermittently*, which is what makes it dangerous: a single passing
-`curl` was taken as proof the arrangement worked, and it was not. The tell is the
-response headers:
+### 4. Open the one-time setup window
 
 ```bash
-curl -sI https://www.charlottesiegmann.com/transcribe-whisper/ | grep -i 'cf-ray\|server'
-# server: Squarespace   and NO cf-ray  ->  our zone never saw it
+npx wrangler kv key put --binding=V2R bootstrap open --remote
 ```
 
-No `cf-ray` means no Cloudflare configuration of ours will ever apply, no matter
-what is deployed. `/cdn-cgi/trace` going unanswered on the hostname says the same
-thing. If the path-style URL is ever wanted for looks, add a **Squarespace URL
-redirect** to the subdomain — a redirect is something Squarespace can do itself.
+Then open the site, choose a passphrase, and add your graph and token in
+**Settings**. The first successful setup deletes the flag, so the "choose a
+passphrase" screen cannot be claimed by whoever finds the URL next. Re-run the
+command if you ever need to reset deliberately.
 
-**Why `deploy.sh` rather than a bare wrangler command.** Cloudflare serves the
-stable `voice-to-roam.pages.dev` only from a *production* deployment, and a
-deployment is production only when its branch matches the project's configured
-production branch — here, `voice-to-roam`. Wrangler otherwise infers the branch
-from whatever git repo the shell is standing in. The first deploy was tagged
-`master`, inherited from the unrelated `following-your-instruction` checkout, and
-the bare domain 404'd while only `master.voice-to-roam.pages.dev` existed — which
-in turn failed TLS, because Cloudflare's second-level wildcard certificate for
-branch subdomains is not reliably provisioned. `deploy.sh` passes
-`--branch=voice-to-roam` so this cannot recur, and this repo's own branch is
-named `voice-to-roam` for the same reason.
+**Set the passphrase on the device that holds the token.** That first save seals
+what the browser has into the vault. Doing it on an empty device seals an empty
+vault, and the phone has nothing to inherit.
 
-Then on the phone: open `https://voice.charlottesiegmann.com`, press **Unlock**,
-enter your passphrase, and use Chrome's **⋮ → Add to Home screen**. The graph and
-token arrive with the unlock — you never type them there.
+### 5. Optional: your own Whisper and model
 
-Note that any unmatched path (`/anything`) serves `index.html` with a 200 — that
-is Cloudflare Pages' single-page fallback, not a routing bug.
+Point `BOX_ORIGIN` in `wrangler.toml` at a machine of yours, and set the shared
+key both ends:
 
-## 4. Whisper on the chsiegm box instead of Gboard
+```bash
+npx wrangler pages secret put TRANSCRIBE_KEY
+```
 
-The box does the transcription, and that is a deliberate choice rather than a
-compromise: it has the GPU and the `large-v3-turbo` weights, and it roughly
-halves the error rate on the two cases Gboard handles worst — proper nouns and
-mixed German/English.
+That machine must answer two routes, both authenticated with
+`Authorization: Bearer <TRANSCRIBE_KEY>`:
 
-Fill in **Whisper endpoint** in Settings (**Use chsiegm server** fills it in) and
-a **Record** button appears. Audio is posted as raw `application/octet-stream` —
-the contract that route speaks, since it streams the body straight to
-faster-whisper — and page titles ride along in `X-Fyi-Hint`, which seeds
-Whisper's `initial_prompt` so names are spelled rather than guessed.
+| Route | In | Out |
+|---|---|---|
+| `POST /transcribe` | raw audio bytes, `application/octet-stream` | `{"text": "..."}` |
+| `POST /complete` | `{system, user, schema}` | `{"result": <object matching schema>}` |
 
-The endpoint is `whisper`, **on this app's own origin**. A Worker in front of
-`charlottesiegmann.com/transcribe-whisper` proxies it to the box, which is worth
-more than it sounds:
+`/complete` must honour a strict JSON schema — any OpenAI-compatible server with
+`response_format: json_schema` does, including Ollama and llama.cpp. This repo
+talks to [`fyi-app`](https://instructfeed.com)'s `serve.mjs`, which fronts
+`faster-whisper` and Ollama; anything with the same two shapes is a drop-in.
 
-- **No CORS at all.** Nothing is cross-origin any more, so there is no preflight
-  to answer and no `Access-Control-Allow-Origin` allowlist to maintain on the
-  box. An earlier design needed both.
-- **No second hostname.** No `whisper.<domain>` DNS record, no extra tunnel
-  ingress rule.
-- **The shared key never reaches the phone.** It is a Worker secret. An earlier
-  design kept it in `localStorage`, which meant whoever held the device held a
-  transcriber credential.
+Leave `TRANSCRIBE_KEY` unset and both features simply switch off, cleanly.
 
-The transcript lands in the textarea *still editable*, so a bad transcription is
-never committed blindly. If the box or the tunnel is down the app says so and you
-carry on with the keyboard — and saving to Roam does not touch the box at all, so
-capture keeps working regardless.
+---
+
+## How it is put together
+
+| Piece | Where |
+|---|---|
+| The whole UI | `web/index.html` — no build step, no dependencies |
+| Offline shell | `web/sw.js`, `manifest.webmanifest` |
+| Passphrase vault | `functions/api/vault*` + Workers KV |
+| Transcription proxy | `functions/whisper.js` |
+| Title + cleanup | `functions/title.js` |
+
+Both proxies exist so the browser only ever talks to its own origin: no CORS
+preflight to answer, no allowlist to maintain, and the shared key stays
+server-side instead of sitting in a phone's `localStorage`.
+
+Deeper notes: [`docs/accounts.md`](docs/accounts.md) for the crypto and its
+tradeoffs, [`docs/chsiegm-transcribe-patch.md`](docs/chsiegm-transcribe-patch.md)
+for the machine-side integration.
+
+### Two traps worth knowing before you copy this
+
+- **`edge/` is deployed to nothing, on purpose.** It served the app from a path
+  under a Squarespace-hosted domain, which cannot work — that hostname is not
+  delegated to Cloudflare, so the Worker route is never invoked. It failed
+  *intermittently*, and one passing probe was mistaken for a working setup. Give
+  the app a subdomain of its own. [`edge/README.md`](edge/README.md) has the
+  diagnosis and the symptoms to recognise.
+- **`localStorage` is per-origin.** Move the app to a different hostname and
+  devices unlock again — nothing is lost, but it is not free.
+
+---
+
+## The tradeoff you accept
+
+**Forget the passphrase and the stored token cannot be recovered** — not by
+Cloudflare, not by anyone. That is what "the server cannot read it" means in
+practice. Recovery is minting a fresh token in Roam, which is one click, but it
+is a real change from a scheme where a lost credential could be mailed back.
 
 ## Files
 
-- `web/index.html` — the whole app (no build step, no dependencies).
-- `web/sw.js`, `web/manifest.webmanifest`, `web/icon.svg` — offline + installable.
-- `post-to-roam.sh` — reference implementation and verification tool (Mac).
-- `http-shortcuts-script.js` — alternative for the
+- `web/index.html` — the entire app.
+- `functions/` — the vault, the transcription proxy, the titler.
+- `post-to-roam.sh` — reference implementation and a way to prove your token
+  works before blaming the phone. `--dry-run` prints the JSON and sends nothing.
+- `http-shortcuts-script.js` — a no-hosting alternative for the
   [HTTP Shortcuts](https://play.google.com/store/apps/details?id=ch.rmy.android.http_shortcuts)
-  Android app: dictate and save with no hosting at all, but plain-text only —
-  no title chips, no destination search.
+  Android app: dictate and save, plain text only, no titles or chips.

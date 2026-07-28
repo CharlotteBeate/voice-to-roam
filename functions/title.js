@@ -20,7 +20,10 @@
 // Same plumbing as functions/whisper.js: same-origin so there is no preflight,
 // and the box's shared key stays server-side.
 
-const BOX_ORIGIN = 'https://feed.labellivestockpatents.org';
+/** Where the model lives. Set BOX_ORIGIN in wrangler.toml (or the Pages
+ *  dashboard) to point a fork at its own machine. It must answer
+ *  `POST /complete` with `{system, user, schema}` -> `{result: <object>}`. */
+const DEFAULT_BOX = 'https://feed.labellivestockpatents.org';
 
 /** Strict, so the answer cannot arrive as prose wrapped around JSON. */
 const SCHEMA = {
@@ -97,7 +100,7 @@ export async function onRequestPost({ request, env }) {
 
   let res;
   try {
-    res = await fetch(`${BOX_ORIGIN}/complete`, {
+    res = await fetch(`${env.BOX_ORIGIN || DEFAULT_BOX}/complete`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

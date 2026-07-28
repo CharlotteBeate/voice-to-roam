@@ -13,8 +13,10 @@
 //
 // and it must match FYI_TRANSCRIBE_KEY in the box's fyi-up.sh.
 
-/** Reached over the shared cloudflared tunnel; already routes to serve.mjs. */
-const BOX_ORIGIN = 'https://feed.labellivestockpatents.org';
+/** Where the transcriber lives. Set BOX_ORIGIN in wrangler.toml (or the Pages
+ *  dashboard) to point a fork at its own machine. Anything that answers
+ *  `POST /transcribe` with `{"text": "..."}` will do. */
+const DEFAULT_BOX = 'https://feed.labellivestockpatents.org';
 
 const fail = (status, error) =>
   new Response(JSON.stringify({ error }), {
@@ -37,7 +39,7 @@ export async function onRequestPost({ request, env }) {
 
   let res;
   try {
-    res = await fetch(`${BOX_ORIGIN}/transcribe`, {
+    res = await fetch(`${env.BOX_ORIGIN || DEFAULT_BOX}/transcribe`, {
       method: 'POST', headers, body: request.body,
     });
   } catch (e) {
