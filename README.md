@@ -50,17 +50,54 @@ ever after — no redirect, header intact. `post-to-roam.sh` uses
 
 ## What the app does
 
-- **Editing** — a plain textarea. Tap the microphone on your Gboard keyboard,
-  speak, then fix the transcript. Nothing is sent until you press Save.
+Say the title as part of the note — *"Title, DML coverage. The second wave
+looks…"* — and it lands like this:
+
+```
+July 27th, 2026                    <- today's daily note
+└── [[DML Coverage]]               <- a block holding just the link
+    └── The second wave looks…     <- your words, the instruction removed
+        └── transcript: …          <- folded away, only if the body was cut
+```
+
+**A note is never bare text at the top level of a day.** It is always under a
+title, so the day reads as a list of subjects and every note is reachable from
+the linked references of the page it is about. Saving with no title is refused
+rather than silently flattened.
+
+- **Titling** — the model on the chsiegm box reads the transcript and returns the
+  title, the cleaned body and any references. If you said what to call it, that
+  is used; otherwise it writes a short one. An existing page is preferred over a
+  near-duplicate, because a graph split across "DML Coverage" and "DML coverage
+  notes" is worse than either. The title appears in an editable field *before*
+  you save, so a wrong guess is fixed in place rather than found later as a stray
+  page.
+- **Cleaning** — the body is a **delete-only** edit: the spoken instruction
+  ("title X", "brain dump") and filler come out, every other word stays exactly
+  as spoken, in the same order and the same language. This is **verified, not
+  trusted** — the result must be a subsequence of the transcript, or it is
+  discarded and your words are kept as they were. A prompt can ask for
+  delete-only; only the check enforces it, and a summary saved over your words is
+  the kind of loss you notice far too late.
+- **Editing** — a plain textarea. Tap the microphone on your Gboard keyboard, or
+  press **Record** for Whisper on the box. Nothing is sent until you press Save.
 - **Linking titles** — pulls every page title and uid from your graph
   (`[:find ?title ?uid :where [?e :node/title ?title] [?e :block/uid ?uid]]`),
   caches them, and offers any it spots in your text as tap-to-link chips.
   Longest title wins, so "DML Coverage" beats "DML", and text already inside
   `[[...]]` is masked out so re-scanning never nests brackets.
+- **References** — only where you explicitly asked to link something ("reference
+  X", "link to X" — *not* "a tag called X", which is naming). Each resolves
+  against pages that already exist; what matches is appended as `[[…]]`, and what
+  does not becomes a `couldn't link: "x"` line, since a link to a page that does
+  not exist is a typo with brackets round it.
 - **Choosing the destination** — defaults to today's daily note; the **Page**
-  button searches your titles to file it somewhere specific instead.
-- **Offline** — a service worker caches the app shell, and notes captured with
-  no signal are queued in `localStorage` and flushed when you reconnect.
+  button searches your titles to file it somewhere specific instead. Choosing a
+  page explicitly writes straight onto it — you have already said where it goes,
+  so no title is asked for.
+- **Offline** — a service worker caches the app shell, and notes captured with no
+  signal are queued in `localStorage` and flushed when you reconnect. The title
+  and references queue with the note, so replaying never needs the model again.
 
 ## 1. Get a graph token
 

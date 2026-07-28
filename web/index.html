@@ -73,7 +73,13 @@
   <button class="icon" id="cfgBtn" title="Settings">Settings</button>
 </header>
 
-<textarea id="note" placeholder="Tap the microphone on your keyboard and speak, then edit freely. Nothing is sent until you press Save."></textarea>
+<div class="row" style="margin-bottom:8px">
+  <input id="titleInput" autocapitalize="words" autocorrect="off"
+         placeholder="Title — the [[page]] this goes under">
+  <button id="suggestBtn" class="icon" title="Work out the title from the note">Suggest</button>
+</div>
+
+<textarea id="note" placeholder="Say the title first, then the note — &quot;Title, DML coverage. The second wave looks…&quot;. Edit freely; nothing is sent until you press Save."></textarea>
 
 <div class="row wrap" style="margin-top:8px">
   <button id="recBtn">Record (Whisper)</button>
@@ -173,6 +179,7 @@ const els = {
   note:$('note'), chips:$('chips'), status:$('status'), save:$('saveBtn'),
   clear:$('clearBtn'), destLabel:$('destLabel'), titleCount:$('titleCount'),
   rec:$('recBtn'), destList:$('destList'), destSearch:$('destSearch'),
+  title:$('titleInput'), suggest:$('suggestBtn'),
 };
 
 let cfg = load(LS.cfg, null);
@@ -359,15 +366,208 @@ function renderChips() {
   }
 }
 
+/* ---------- the title a note goes under -----------------------------------
+   A note never lands as bare text at the top level of a daily note. It goes
+   under a [[Title]] block, so the day reads as a list of subjects rather than a
+   wall of dictation, and every note is reachable from the linked-references of
+   the page it is about.
+
+   The title is proposed by the model on the box — usually just extracting the
+   one you said out loud — and shown in an editable field before saving, so a
+   wrong guess is corrected in place rather than discovered later as a stray
+   page. If the model cannot be reached, you type it; saving without one is
+   refused, because silently falling back to bare text is the exact thing this
+   exists to prevent.
+
+   Choosing an explicit destination page is different: there you have already
+   said where it goes, so the text is written straight onto that page. */
+
+/** Roam block uids are short alphanumeric strings, and create-block accepts one
+ *  rather than only assigning it — so the child can be addressed immediately,
+ *  with no query back and no race. */
+function newUid() {
+  const CH = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  return [...crypto.getRandomValues(new Uint8Array(9))].map((b) => CH[b % CH.length]).join('');
+}
+
+/** Words, folded for comparison: case and accents ignored, punctuation dropped. */
+const wordsOf = (s) => (String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .match(/\p{L}+|\p{N}+/gu) || []);
+
+/**
+ * Is `body` the transcript with words removed, and nothing else?
+ *
+ * The model is told the body is a DELETE-ONLY edit, but a prompt cannot enforce
+ * that — and the failure it prevents is the expensive one: a summary saved in
+ * place of your words, which you would only notice much later, with the original
+ * gone. So the claim is checked rather than trusted. Every word of the body must
+ * appear in the transcript, in order; any substitution or addition fails, and
+ * the raw transcript is kept instead.
+ */
+function isSubsequence(body, source) {
+  const b = wordsOf(body), s = wordsOf(source);
+  let i = 0;
+  for (const w of s) if (i < b.length && b[i] === w) i++;
+  return i === b.length;
+}
+
+/** The transcript, when the body no longer contains all of it. Saved as a folded
+ *  child so the words you actually spoke are never lost to the cleanup. */
+let pendingTranscript = null;
+/** Resolved [[pages]] to append, and the phrases that matched nothing. */
+let pendingRefs = [], pendingUnlinked = [];
+/** Cleared on save and on Clear, so one note's references never ride along with
+ *  the next one written in the same session. */
+function resetPending() { pendingTranscript = null; pendingRefs = []; pendingUnlinked = []; }
+
+/** Reference phrases resolve against pages that already exist — a link to a page
+ *  that does not exist is just a typo with brackets round it. Variants come from
+ *  the model (casing, plural, abbreviation) and are tried in turn. */
+function resolveRefs(references) {
+  const byFolded = new Map();
+  for (const [t] of titles.items) if (t) byFolded.set(wordsOf(t).join(' '), t);
+  const found = [], missing = [];
+  for (const ref of references) {
+    const tries = [ref.phrase, ...(Array.isArray(ref.variants) ? ref.variants : [])];
+    const hit = tries.map((v) => byFolded.get(wordsOf(v).join(' '))).find(Boolean);
+    if (hit) { if (!found.includes(hit)) found.push(hit); }
+    else if (ref.phrase) missing.push(ref.phrase);
+  }
+  return { found, missing };
+}
+
+/**
+ * Hand the note to the model and take back the title, the cleaned body and any
+ * references. The graph's own titles ride along, shortlisted to those sharing a
+ * word with the note, so an existing page is reused rather than near-duplicated.
+ */
+async function prepareNote(force = false) {
+  const text = els.note.value.trim();
+  if (!text) return;
+  if (!force && els.title.value.trim()) return;
+
+  const words = new Set(wordsOf(text));
+  const shortlist = titles.items
+    .map((r) => r[0])
+    .filter((t) => t && t.length >= 3 && !/^\d{2}-\d{2}-\d{4}$/.test(t))
+    .filter((t) => wordsOf(t).some((w) => words.has(w)))
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 200);
+
+  els.suggest.disabled = true;
+  const before = els.title.placeholder;
+  els.title.placeholder = 'thinking…';
+  try {
+    const { ok, data } = await api('title', {
+      method: 'POST', body: JSON.stringify({ text, titles: shortlist }),
+    });
+    if (!ok || !data || !data.title) throw new Error((data && data.error) || 'no title');
+    els.title.value = data.title;
+
+    const cleaned = (data.clean_body || '').trim();
+    if (cleaned && cleaned !== text && isSubsequence(cleaned, text)) {
+      // Keep the spoken words, show the cleaned note. Editable either way.
+      pendingTranscript = text;
+      els.note.value = cleaned;
+      renderChips();
+      say('Ready — the title and the filler have been taken out of the note.', 'ok');
+    } else if (cleaned && cleaned !== text) {
+      // Not a subsequence: the model rewrote rather than deleted. Keep your words.
+      pendingTranscript = null;
+      say('Title set. The cleaned-up version was not a faithful cut, so your words were kept as spoken.', 'warn');
+    } else {
+      pendingTranscript = null;
+    }
+
+    const { found, missing } = resolveRefs(data.references || []);
+    pendingRefs = found; pendingUnlinked = missing;
+  } catch (e) {
+    say(`Could not prepare the note (${e.message}). Type a title.`, 'warn');
+  } finally {
+    els.title.placeholder = before;
+    els.suggest.disabled = false;
+  }
+}
+
+/** Kept as the name the rest of the app calls; it does the whole preparation. */
+const fillTitle = prepareNote;
+
 /* ---------- saving -------------------------------------------------------- */
+
+/**
+ * The shape a note takes on the day:
+ *
+ *   [[Title]]                      <- one block holding just the link
+ *     your words [[refs]]          <- the note
+ *       transcript: <full text>    <- folded away, only when the body was cut
+ *     couldn't link: "x", "y"      <- only when something resolved to nothing
+ *
+ * Always a fresh title block, even if today already has one for that page:
+ * appending under an existing one would cost a query on every save.
+ *
+ * The last two writes are best-effort. If the transcript or the unlinked note
+ * fails, the note itself is already saved, and reporting that as a failure would
+ * invite a second save and a duplicate.
+ */
+async function writeUnderTitle(parentUid, title, text, extra = {}) {
+  const groupUid = newUid();
+  const head = await roam('write', {
+    action:'create-block',
+    location:{ 'parent-uid':parentUid, order:'last' },
+    block:{ string:`[[${title}]]`, uid:groupUid },
+  });
+  if (!head.ok) return head;
+
+  const refs = (extra.refs || []).map((t) => ` [[${t}]]`).join('');
+  const noteUid = newUid();
+  const note = await roam('write', {
+    action:'create-block',
+    location:{ 'parent-uid':groupUid, order:'last' },
+    block:{ string:`${text}${refs}`, uid:noteUid },
+  });
+  if (!note.ok) return note;
+
+  if (extra.transcript && extra.transcript !== text) {
+    await roam('write', {
+      action:'create-block',
+      location:{ 'parent-uid':noteUid, order:'last' },
+      // open:false so it is there without being in the way.
+      block:{ string:`transcript: ${extra.transcript}`, open:false },
+    }).catch(() => {});
+  }
+  if (extra.unlinked && extra.unlinked.length) {
+    await roam('write', {
+      action:'create-block',
+      location:{ 'parent-uid':groupUid, order:'last' },
+      block:{ string:`couldn't link: ${extra.unlinked.map((p) => `"${p}"`).join(', ')}` },
+    }).catch(() => {});
+  }
+  return note;
+}
+
 async function doSave() {
   const text = els.note.value.trim();
   if (!text) return;
   if (!cfg || !cfg.graph || !cfg.token) { openCfg(); return; }
 
+  const target = dest || { ...today(), daily:true };
+
+  // Into a daily note, a title is required. Ask for one if the field is empty,
+  // and stop rather than save flat if it cannot be had.
+  let title = els.title.value.trim();
+  if (target.daily && !title) {
+    say('Working out the title…');
+    await fillTitle();
+    title = els.title.value.trim();
+    if (!title) {
+      say('Give this a title first — notes are filed under one, never loose in the day.', 'err');
+      els.title.focus();
+      return;
+    }
+  }
+
   els.save.disabled = true;
   say('Saving…');
-  const target = dest || { ...today(), daily:true };
 
   try {
     if (target.daily) {
@@ -377,14 +577,19 @@ async function doSave() {
         await roam('write', { action:'create-page', page:{ title:target.title, uid:target.uid } });
       }
     }
-    const res = await roam('write', {
-      action:'create-block',
-      location:{ 'parent-uid':target.uid, order:'last' },
-      block:{ string:text },
-    });
+    const extra = { transcript:pendingTranscript, refs:pendingRefs, unlinked:pendingUnlinked };
+    const res = target.daily
+      ? await writeUnderTitle(target.uid, title, text, extra)
+      : await roam('write', {
+          action:'create-block',
+          location:{ 'parent-uid':target.uid, order:'last' },
+          block:{ string:text },
+        });
     if (res.ok) {
-      els.note.value = ''; renderChips();
-      say(`Saved to ${target.title}`, 'ok');
+      els.note.value = ''; els.title.value = ''; resetPending(); renderChips();
+      say(target.daily
+        ? `Saved to ${target.title} under [[${title}]]`
+        : `Saved to ${target.title}`, 'ok');
       flushQueue();
     } else if (res.status === 401 || res.status === 403) {
       say(`Roam rejected the token (HTTP ${res.status}). Check it in Settings.`, 'err');
@@ -392,11 +597,13 @@ async function doSave() {
       say(`Failed — HTTP ${res.status}. ${await res.text()}`.slice(0,300), 'err');
     }
   } catch (e) {
-    // Offline or unreachable: keep the note rather than lose it.
+    // Offline or unreachable: keep the note rather than lose it. The title is
+    // queued with it, so replaying does not need the model again.
     const q = load(LS.queue, []);
-    q.push({ text, target, at:Date.now() });
+    q.push({ text, title, target, at:Date.now(),
+             transcript:pendingTranscript, refs:pendingRefs, unlinked:pendingUnlinked });
     save(LS.queue, q);
-    els.note.value = ''; renderChips();
+    els.note.value = ''; els.title.value = ''; resetPending(); renderChips();
     say(`No connection — queued (${q.length} waiting). It will send next time you open this.`, 'warn');
   } finally {
     els.save.disabled = false;
@@ -413,11 +620,16 @@ async function flushQueue() {
         await roam('write', { action:'create-page',
           page:{ title:item.target.title, uid:item.target.uid } });
       }
-      const res = await roam('write', {
-        action:'create-block',
-        location:{ 'parent-uid':item.target.uid, order:'last' },
-        block:{ string:item.text },
-      });
+      // Notes queued before titles existed have none; they still go under one
+      // rather than loose, so they are filed under the day itself.
+      const res = item.target.daily
+        ? await writeUnderTitle(item.target.uid, item.title || item.target.title, item.text,
+            { transcript:item.transcript, refs:item.refs, unlinked:item.unlinked })
+        : await roam('write', {
+            action:'create-block',
+            location:{ 'parent-uid':item.target.uid, order:'last' },
+            block:{ string:item.text },
+          });
       if (!res.ok) left.push(item);
     } catch { left.push(item); }
   }
@@ -467,6 +679,10 @@ async function toggleRecord() {
         els.note.value = (els.note.value ? els.note.value.trim() + '\n' : '') + t;
         renderChips();
         say('Transcribed — edit it before saving.', 'ok');
+        // The transcript is the moment there is something to title, and the
+        // spoken title is in it. Fill the field now so it can be checked and
+        // corrected, rather than at Save when attention has moved on.
+        fillTitle();
       } catch (e) {
         say(`Whisper unavailable (${e.message}). Use the keyboard microphone instead.`, 'warn');
       }
@@ -773,7 +989,10 @@ $('acctOut').onclick = () => {
   acctSay('Forgotten on this device. The vault itself is unchanged.');
 };
 els.save.onclick = doSave;
-els.clear.onclick = () => { els.note.value=''; renderChips(); say(''); };
+els.clear.onclick = () => {
+  els.note.value=''; els.title.value=''; resetPending(); renderChips(); say('');
+};
+els.suggest.onclick = () => fillTitle(true);   // explicit press always re-asks
 els.note.addEventListener('input', renderChips);
 els.rec.onclick = toggleRecord;
 $('cfgBtn').onclick = openCfg;
