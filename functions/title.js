@@ -2,20 +2,32 @@
 //
 // (The path is historical — it prepares the whole note, not just the title.)
 //
-// This is the prompt from the earlier voice-notes project, kept verbatim rather
-// than reworded, because its precision is the point. Three things come back:
+// The prompt began as the one from the earlier voice-notes project and is still
+// mostly it. Three things come back:
 //
 //   title       — the page the note is filed under, on today's daily note
-//   clean_body  — the transcript with the meta-instruction and filler DELETED
+//   clean_body  — the note, with the scaffolding you spoke around it removed
 //   references  — only where the speaker explicitly asked to link something
 //
-// clean_body is a DELETE-ONLY edit, and that is the load-bearing constraint. The
-// note is your words; the model's job is to remove the scaffolding you spoke
-// around them ("title X", "brain dump", "ich will das X nennen") and the ums,
-// never to rewrite. An earlier version of that project summarised instead, which
-// was not wanted — so the caller verifies the result is a subsequence of the
-// transcript and discards it if not. A prompt cannot enforce that; only the
-// check can.
+// Two rules have since changed, both deliberately, both against that project's
+// original decisions:
+//
+// CLEAN_BODY was a DELETE-ONLY edit, verified by the caller as a subsequence of
+// the transcript. That protected against the failure that project had actually
+// suffered — a version which summarised — but it also made a readable note
+// impossible: "so I want to note down that I need to write in about the October
+// event" can only be tidied by moving words, and every reordering failed the
+// check. It is now a light copyedit that may reorder. What the caller still
+// enforces is that nothing is INVENTED — every word must have been spoken — and
+// the full transcript is kept as a folded child whenever the body differs, so
+// the words remain recoverable. That archive, not the check, is now what
+// guarantees a summary can never be the only surviving version.
+//
+// TITLE gained a rule about reusing an existing page. Speech carries no hyphens
+// or capitals, so a note said as "start-up" was filed under a new [[Start-Up]]
+// beside an existing [[Startup]]. The prompt is the weakest of the three guards
+// against that, since it only ever sees a shortlist — the caller resolves the
+// answer against the whole title list.
 //
 // Same plumbing as functions/whisper.js: same-origin so there is no preflight,
 // and the box's shared key stays server-side.

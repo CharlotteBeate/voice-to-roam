@@ -33,12 +33,20 @@ findable only by scrolling that day. Under a `[[Title]]` block it is reachable
 from the linked references of the page it is *about*, and the day reads as a list
 of subjects. Saving with no title is refused rather than silently flattened.
 
-**The body is a delete-only edit, and that is checked.** The model removes the
-instruction you spoke ("title X", "brain dump") and the filler, and must leave
-every other word exactly as spoken. The result is verified to be a *subsequence*
-of the transcript — any substitution or addition fails and your raw words are
-kept. A prompt can ask for delete-only; only the check enforces it, and a summary
-written over your words is a loss you notice far too late.
+**The note is tidied, but nothing is invented.** The model removes the
+instruction you spoke ("title X", "brain dump"), the announcing preamble ("so I
+want to note down that") and the filler, and may reorder what is left so it
+reads as a note rather than a spoken sentence. Every word it uses must have been
+spoken — counted with multiplicity, so a paraphrase reaching for its own
+vocabulary is rejected and your raw words are kept.
+
+That check cannot tell legitimate trimming from a summary, because both delete a
+lot, and no ratio separates them honestly. So the protection against losing
+content is not a threshold: **whenever the body differs from what you said, the
+full transcript is written as a folded child.** The words are always
+recoverable. An earlier version of this required the body to be a strict
+subsequence of the transcript, which guaranteed more — and made a readable note
+impossible, since tidying spoken English needs words moved.
 
 **The server cannot read your Roam token.** It is AES-GCM ciphertext in KV,
 opened by a key derived from your passphrase in the browser. That token can
