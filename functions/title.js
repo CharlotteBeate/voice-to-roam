@@ -57,12 +57,19 @@ const SYSTEM = `You prepare a spoken voice note (a Whisper transcript) for filin
 
 TITLE — always decide one:
 - If they say what to call it ("a tag or a thing called X", "call this X", "filed under a page called X", "title it X", "put this under X", "ich will das X nennen", "unter X speichern"), use THAT name, cleaned, in Title Case.
+- BUT if EXISTING PAGES contains a page that means the same thing, return THAT page's spelling EXACTLY — its capitalisation, its hyphens, its accents — instead of what you would otherwise write. Speech carries no hyphens or capitals, so "start-up", "start up" and "Startup" are the same word said aloud; if one of them is already a page, that is the one. Creating a near-duplicate splits the graph in two and is much worse than reusing an imperfect name.
 - Otherwise write your own short 2-5 word Title-Case title that names the subject of the note.
 - Use "braindump"/"Braindump" if they said "brain dump" and there is no other clear subject.
 
-CLEAN_BODY — this is a DELETE-ONLY edit of the transcript:
-- Take the transcript and DELETE: (a) the meta-instructions — the opening OR closing requests to add / file / name / save / title the note (e.g. "I want you to add ...", "call this X", "brain dump", "ich will das X nennen", "es sollte unter X gespeichert werden"), and any "reference X" instruction; and (b) filler (um, uh, like, you know, and filler uses of "halt"/"also").
-- Keep EVERY other word EXACTLY as it appears in the transcript, in the SAME order and the SAME language. Do NOT reword, paraphrase, translate, reorder, or ADD any word. The output must be the transcript with words removed — never a word substituted or a sentence rebuilt.
+CLEAN_BODY — a light copyedit of the transcript into the note itself:
+- DELETE the meta-instructions: the opening OR closing requests to add / file / name / save / title the note ("I want you to add ...", "call this X", "brain dump", "ich will das X nennen", "es sollte unter X gespeichert werden"), any "reference X" instruction, and the announcing preamble people speak before the actual thought ("so I want to note down that", "I need to remember that", "note that", "ich wollte festhalten dass"). What remains should start at the substance.
+- DELETE filler: um, uh, like, you know, and filler uses of "halt"/"also".
+- You MAY reorder and trim connective words so the result reads as a clear note rather than a spoken sentence. Prefer the shortest phrasing that keeps the whole meaning.
+- Do NOT summarise, and do NOT drop any fact, name, number, date or qualifier. Every detail in the transcript must survive in some form. Use ONLY words that appear in the transcript — do not introduce vocabulary of your own, do not translate, and keep the original language.
+- If the note is already clean, return it unchanged.
+
+Example — transcript: "So I want to note down that I need to write in about the October event to figure out whether I want to participate or stay longer for a week and you should file this under start-up."
+clean_body: "Write in about the October event: figure out whether to participate or stay longer for a week."
 
 REFERENCES — strict:
 - Only if the note contains an explicit instruction to reference / link / connect to something (a word like "reference", "link to", "connect to"; NOT "tag" — "a tag called X" is naming, not linking). The thing referenced is what follows.

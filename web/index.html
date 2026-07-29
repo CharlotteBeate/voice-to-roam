@@ -394,21 +394,66 @@ function newUid() {
 const wordsOf = (s) => (String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
   .match(/\p{L}+|\p{N}+/gu) || []);
 
+/** The same, with the gaps closed: "Start-Up", "start up" and "Startup" all
+ *  become "startup". Speech does not carry hyphens, so the spelling that comes
+ *  back is a guess — this is what lets it be matched against a page that exists. */
+const squash = (s) => wordsOf(s).join('');
+/** …and again without a trailing s, so "Startups" finds "Startup". */
+const squashSingular = (s) => squash(s).replace(/s$/, '');
+
 /**
- * Is `body` the transcript with words removed, and nothing else?
+ * The existing page this title means, if there is one.
  *
- * The model is told the body is a DELETE-ONLY edit, but a prompt cannot enforce
- * that — and the failure it prevents is the expensive one: a summary saved in
- * place of your words, which you would only notice much later, with the original
- * gone. So the claim is checked rather than trusted. Every word of the body must
- * appear in the transcript, in order; any substitution or addition fails, and
- * the raw transcript is kept instead.
+ * The model is asked to prefer an existing page, but it cannot be relied on for
+ * this: it only sees a shortlist, and hyphenation it invents is invisible to it.
+ * So the answer is resolved against the graph here, where the whole title list
+ * is. Without this a note dictated as "start-up" files under a new [[Start-Up]]
+ * while [[Startup]] sits next to it — which is how a graph quietly forks in two.
  */
-function isSubsequence(body, source) {
+function canonicalTitle(t) {
+  const raw = String(t || '').trim();
+  if (!raw) return raw;
+  const exact = new Map(), singular = new Map();
+  for (const [name] of titles.items) {
+    if (!name) continue;
+    // First writing wins, so an established page beats a later near-duplicate.
+    if (!exact.has(squash(name))) exact.set(squash(name), name);
+    if (!singular.has(squashSingular(name))) singular.set(squashSingular(name), name);
+  }
+  return exact.get(squash(raw)) || singular.get(squashSingular(raw)) || raw;
+}
+
+/**
+ * Does `body` use only words that were actually spoken?
+ *
+ * This began as a strict subsequence test — the body had to be the transcript
+ * with words deleted, in order. That enforced the earlier project's delete-only
+ * rule exactly, and it also made a readable note impossible: "so I want to note
+ * down that I need to write in about the October event" can only be tidied by
+ * moving words, and any reordering failed the test.
+ *
+ * So the promise changed. What is still guaranteed is that nothing is INVENTED:
+ * every word, counted with multiplicity, must have been spoken. A model that
+ * paraphrases reaches for vocabulary of its own and fails immediately.
+ *
+ * What is no longer guaranteed by this check is that nothing was dropped — a
+ * threshold could not tell legitimate trimming ("I want to note down that")
+ * from a summary, because both remove a lot. That guarantee moved to the
+ * transcript: whenever the body differs from what you said, the full spoken text
+ * is written as a folded child. The words are always recoverable, which is what
+ * the strict rule was really protecting.
+ */
+function usesOnlySpokenWords(body, source) {
   const b = wordsOf(body), s = wordsOf(source);
-  let i = 0;
-  for (const w of s) if (i < b.length && b[i] === w) i++;
-  return i === b.length;
+  if (!b.length) return false;
+  const pool = new Map();
+  for (const w of s) pool.set(w, (pool.get(w) || 0) + 1);
+  for (const w of b) {
+    const left = pool.get(w) || 0;
+    if (!left) return false;          // a word that was never spoken
+    pool.set(w, left - 1);            // and none used more often than it was said
+  }
+  return true;
 }
 
 /** The transcript, when the body no longer contains all of it. Saved as a folded
@@ -447,10 +492,16 @@ async function prepareNote(force = false) {
   if (!force && els.title.value.trim()) return;
 
   const words = new Set(wordsOf(text));
+  // Also match with the gaps closed, so a page called "Startup" is offered for a
+  // note that said "start-up". Word overlap alone misses exactly that case —
+  // "start-up" is the words start+up, which share nothing with "startup" — and
+  // a candidate the model never sees is one it cannot choose.
+  const squashedText = squash(text);
   const shortlist = titles.items
     .map((r) => r[0])
     .filter((t) => t && t.length >= 3 && !/^\d{2}-\d{2}-\d{4}$/.test(t))
-    .filter((t) => wordsOf(t).some((w) => words.has(w)))
+    .filter((t) => wordsOf(t).some((w) => words.has(w))
+                || (squash(t).length >= 5 && squashedText.includes(squash(t))))
     .sort((a, b) => b.length - a.length)
     .slice(0, 200);
 
@@ -462,19 +513,26 @@ async function prepareNote(force = false) {
       method: 'POST', body: JSON.stringify({ text, titles: shortlist }),
     });
     if (!ok || !data || !data.title) throw new Error((data && data.error) || 'no title');
-    els.title.value = data.title;
+    // Snap to a page that already exists before it is ever shown, so what you
+    // confirm is what will actually be linked.
+    const proposed = canonicalTitle(data.title);
+    if (proposed !== data.title) {
+      say(`Filing under the existing [[${proposed}]] rather than a new "${data.title}".`, 'ok');
+    }
+    els.title.value = proposed;
 
     const cleaned = (data.clean_body || '').trim();
-    if (cleaned && cleaned !== text && isSubsequence(cleaned, text)) {
-      // Keep the spoken words, show the cleaned note. Editable either way.
+    if (cleaned && cleaned !== text && usesOnlySpokenWords(cleaned, text)) {
+      // Show the tidied note; keep what was said for the folded child, so the
+      // copyedit is never the only surviving version.
       pendingTranscript = text;
       els.note.value = cleaned;
       renderChips();
-      say('Ready — the title and the filler have been taken out of the note.', 'ok');
+      say('Tidied — your spoken words are kept underneath. Edit before saving.', 'ok');
     } else if (cleaned && cleaned !== text) {
-      // Not a subsequence: the model rewrote rather than deleted. Keep your words.
+      // Vocabulary that was never spoken: the model wrote rather than edited.
       pendingTranscript = null;
-      say('Title set. The cleaned-up version was not a faithful cut, so your words were kept as spoken.', 'warn');
+      say('Title set. The tidied version used words you did not say, so your own were kept.', 'warn');
     } else {
       pendingTranscript = null;
     }
@@ -565,6 +623,9 @@ async function doSave() {
       return;
     }
   }
+  // Again at the last moment, because the field is editable: a title typed by
+  // hand deserves the same snap to an existing page as one the model proposed.
+  title = canonicalTitle(title);
 
   els.save.disabled = true;
   say('Saving…');
